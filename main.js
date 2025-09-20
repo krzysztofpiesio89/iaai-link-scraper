@@ -3,40 +3,36 @@ import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
 
-console.log('🚀 IAAI Vehicle Detail Scraper - Starting...');
+console.log('🚀 IAAI Vehicle Detail Scraper (Optimized with JSON Extraction) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
-    startUrls = [], // Oczekuje tablicy obiektów, np. [{ "url": "https://..." }]
+    startUrls = [],
     proxyConfiguration,
 } = input;
 
 // Funkcje pomocnicze do czyszczenia danych
 const parseNumber = (str) => {
-    if (!str) return null;
-    // Usuwa symbole walut, przecinki, "mi" i inne znaki, pozostawiając tylko cyfry i kropkę
+    if (!str || typeof str !== 'string') return null;
     const cleaned = str.replace(/[$,\smiUSD]/g, '');
     const number = parseFloat(cleaned);
     return isNaN(number) ? null : number;
 };
 
-const parseDate = (dateStr, timeStr) => {
-    if (!dateStr || !timeStr) return null;
+// Uproszczona funkcja - teraz przyjmuje jeden pełny string daty
+const parseDate = (dateStr) => {
+    if (!dateStr) return null;
     try {
-        // Łączy datę i czas, np. "09/25/2025" i "10:30 AM (CDT)"
-        // Usuwa informację o strefie czasowej z nawiasów dla lepszej kompatybilności
-        const cleanedTime = timeStr.replace(/\s\(.*\)/, '');
-        const dateTimeString = `${dateStr} ${cleanedTime}`;
-        return new Date(dateTimeString).toISOString(); // Zwraca datę w formacie ISO 8601
+        return new Date(dateStr).toISOString();
     } catch (e) {
-        console.log(`Could not parse date: ${dateStr} ${timeStr}`);
+        console.log(`Could not parse date: ${dateStr}`);
         return null;
     }
 };
 
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: await Actor.createProxyConfiguration(proxyConfiguration),
-    maxConcurrency: 10, // Można zwiększyć, bo każde zadanie jest niezależne
+    maxConcurrency: 10,
 
     async requestHandler({ page, request }) {
         console.log(`🛠️ Processing: ${request.url}`);
@@ -44,71 +40,60 @@ const crawler = new PlaywrightCrawler({
         try {
             await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-            // Czekamy na załadowanie kluczowych informacji
-            await page.waitForSelector('dl.data-list--details', { timeout: 15000 });
+            const unavailableMessage = page.locator('h2:has-text("Vehicle Details Are Not Available")');
+            if (await unavailableMessage.isVisible({ timeout: 5000 })) {
+                console.log(`🟡 Vehicle at ${request.url} is no longer available. Skipping.`);
+                return;
+            }
 
-            // Główna logika ekstrakcji danych w kontekście strony
-            const vehicleData = await page.evaluate((helpers) => {
-                // Konwertujemy funkcje pomocnicze na string, aby przekazać je do przeglądarki
-                const parseNum = new Function(`return ${helpers.parseNumber}`)();
-                const parseDt = new Function(`return ${helpers.parseDate}`)();
+            // --- NOWA STRATEGIA START ---
+            // Czekamy na tag <script> zawierający dane JSON.
+            await page.waitForSelector('script#ProductDetailsVM', { timeout: 15000 });
 
-                // Funkcja do pobierania tekstu z elementu <dd> na podstawie etykiety <dt>
-                const getElementTextByLabel = (label) => {
-                    const allTerms = document.querySelectorAll('dt');
-                    const foundTerm = Array.from(allTerms).find(el => el.textContent?.trim() === label);
-                    return foundTerm?.nextElementSibling?.textContent?.trim() || null;
-                };
-                
-                // --- Ekstrakcja Danych ---
-                const titleElement = document.querySelector('h1.heading-alpha');
-                const vehicleTitle = titleElement ? titleElement.textContent.trim() : null;
-
-                const saleDateRaw = getElementTextByLabel('Sale Date:');
-                const saleTimeRaw = getElementTextByLabel('Time:');
-
-                const data = {
-                    vehicleTitle,
-                    vin: getElementTextByLabel('VIN:'),
-                    stockNumber: getElementTextByLabel('Stock #:'),
-                    mileage: parseNum(getElementTextByLabel('Odometer:')),
-                    primaryDamage: getElementTextByLabel('Primary Damage:'),
-                    secondaryDamage: getElementTextByLabel('Secondary Damage:'),
-                    estimatedRetailValue: parseNum(getElementTextByLabel('Est. Retail Value:')),
-                    bodyStyle: getElementTextByLabel('Body Style:'),
-                    engine: getElementTextByLabel('Engine:'),
-                    transmission: getElementTextByLabel('Transmission:'),
-                    fuelType: getElementTextByLabel('Fuel Type:'),
-                    cylinders: getElementTextByLabel('Cylinders:'),
-                    hasKeys: getElementTextByLabel('Keys:')?.toLowerCase() === 'yes', // Konwersja na boolean
-                    driveLineType: getElementTextByLabel('Driveline:'),
-                    saleDocument: getElementTextByLabel('Sale Document:'),
-
-                    // Informacje o aukcji
-                    auctionLocation: getElementTextByLabel('Auction Center:'),
-                    saleDate: parseDt(saleDateRaw, saleTimeRaw),
-                    auctionItemNumber: getElementTextByLabel('Item #:'),
-                    
-                    // Informacje o licytacji
-                    currentBid: parseNum(document.querySelector('[data-bind="text: currentBid"]')?.textContent?.trim()),
-                    buyNowPrice: parseNum(document.querySelector('.buy-now-price')?.textContent?.trim())
-                };
-
-                return data;
-            }, { // Przekazanie funkcji pomocniczych jako stringi
-                parseNumber: parseNumber.toString(),
-                parseDate: parseDate.toString(),
+            // Pobieramy zawartość taga <script> i parsujemy ją jako JSON.
+            const jsonData = await page.evaluate(() => {
+                const scriptTag = document.getElementById('ProductDetailsVM');
+                return scriptTag ? JSON.parse(scriptTag.textContent) : null;
             });
 
-            // Dodajemy URL do finalnego obiektu
-            vehicleData.sourceUrl = request.url;
+            if (!jsonData) {
+                throw new Error('Could not find or parse ProductDetailsVM JSON data on the page.');
+            }
+
+            // Mapujemy dane z obiektu JSON na nasz docelowy format.
+            const attributes = jsonData.inventoryView?.attributes || {};
+            const auctionInfo = jsonData.auctionInformation || {};
+            
+            const vehicleData = {
+                vehicleTitle: attributes.YearMakeModelSeries?.trim(),
+                vin: attributes.VIN,
+                stockNumber: attributes.StockNumber,
+                mileage: parseNumber(attributes.ODOValue),
+                primaryDamage: attributes.PrimaryDamageDesc,
+                secondaryDamage: attributes.SecondaryDamageDesc,
+                estimatedRetailValue: parseNumber(jsonData.inventory?.providerACV), // Znalezione w innym miejscu
+                bodyStyle: attributes.BodyStyleName,
+                engine: attributes.EngineSize || attributes.EngineInformation,
+                transmission: attributes.Transmission,
+                fuelType: attributes.FuelTypeDesc,
+                cylinders: attributes.CylindersDesc,
+                hasKeys: attributes.Keys?.toLowerCase() === 'true',
+                driveLineType: attributes.DriveLineTypeDesc,
+                saleDocument: `${attributes.Title} (${attributes.TitleStateName})`,
+                auctionLocation: attributes.BranchName,
+                saleDate: parseDate(auctionInfo.prebidInformation?.liveDate),
+                auctionItemNumber: attributes.Slot,
+                currentBid: parseNumber(auctionInfo.biddingInformation?.highBidAmount),
+                buyNowPrice: parseNumber(auctionInfo.biddingInformation?.buyNowPrice),
+                sourceUrl: request.url,
+            };
+            // --- NOWA STRATEGIA KONIEC ---
 
             await Dataset.pushData(vehicleData);
-            console.log(`✅ Successfully extracted data for: ${vehicleData.vin}`);
+            console.log(`✅ Successfully extracted data for VIN: ${vehicleData.vin}`);
 
         } catch (error) {
             console.error(`❌ Failed to process ${request.url}: ${error.message}`);
-            await Actor.fail();
         }
     },
 });
