@@ -13,15 +13,15 @@
         { "url": "https://www.iaai.com/VehicleDetail/0-39735871~US" }
       ]
     },
-    "proxyConfiguration": {
-      "title": "Proxy Configuration",
-      "type": "object",
-      "description": "Using Apify proxies is highly recommended to prevent getting blocked.",
-      "editor": "proxyConfiguration",
-      "default": {
-        "useApifyProxy": true
-      }
-    }
+        "proxyConfiguration": {
+        "title": "Proxy Configuration",
+        "type": "object",
+        "description": "Using Apify proxies is highly recommended to prevent getting blocked.",
+        "editor": "proxy",
+        "default": {
+            "useApifyProxy": true
+        }
+        }
   },
   "required": ["startUrls"]
 }
