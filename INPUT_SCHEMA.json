@@ -1,0 +1,27 @@
+{
+  "title": "IAAI Vehicle Detail Scraper Input",
+  "description": "Provide a list of IAAI vehicle URLs to extract detailed information.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "startUrls": {
+      "title": "Vehicle URLs",
+      "type": "array",
+      "description": "Enter the full URLs of the IAAI vehicle detail pages you want to scrape.",
+      "editor": "requestListSources",
+      "prefill": [
+        { "url": "https://www.iaai.com/VehicleDetail/0-39735871~US" }
+      ]
+    },
+    "proxyConfiguration": {
+      "title": "Proxy Configuration",
+      "type": "object",
+      "description": "Using Apify proxies is highly recommended to prevent getting blocked.",
+      "editor": "proxyConfiguration",
+      "default": {
+        "useApifyProxy": true
+      }
+    }
+  },
+  "required": ["startUrls"]
+}
