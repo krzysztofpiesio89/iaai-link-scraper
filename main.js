@@ -46,11 +46,10 @@ const crawler = new PlaywrightCrawler({
                 return;
             }
 
-            // --- NOWA STRATEGIA START ---
-            // Czekamy na tag <script> zawierający dane JSON.
-            await page.waitForSelector('script#ProductDetailsVM', { timeout: 15000 });
+            // --- POPRAWKA TUTAJ ---
+            // Czekamy na tag <script> aż będzie DOŁĄCZONY do DOM, a nie widoczny.
+            await page.waitForSelector('script#ProductDetailsVM', { state: 'attached', timeout: 15000 });
 
-            // Pobieramy zawartość taga <script> i parsujemy ją jako JSON.
             const jsonData = await page.evaluate(() => {
                 const scriptTag = document.getElementById('ProductDetailsVM');
                 return scriptTag ? JSON.parse(scriptTag.textContent) : null;
@@ -60,7 +59,6 @@ const crawler = new PlaywrightCrawler({
                 throw new Error('Could not find or parse ProductDetailsVM JSON data on the page.');
             }
 
-            // Mapujemy dane z obiektu JSON na nasz docelowy format.
             const attributes = jsonData.inventoryView?.attributes || {};
             const auctionInfo = jsonData.auctionInformation || {};
             
@@ -71,7 +69,7 @@ const crawler = new PlaywrightCrawler({
                 mileage: parseNumber(attributes.ODOValue),
                 primaryDamage: attributes.PrimaryDamageDesc,
                 secondaryDamage: attributes.SecondaryDamageDesc,
-                estimatedRetailValue: parseNumber(jsonData.inventory?.providerACV), // Znalezione w innym miejscu
+                estimatedRetailValue: parseNumber(jsonData.inventory?.providerACV),
                 bodyStyle: attributes.BodyStyleName,
                 engine: attributes.EngineSize || attributes.EngineInformation,
                 transmission: attributes.Transmission,
@@ -87,7 +85,6 @@ const crawler = new PlaywrightCrawler({
                 buyNowPrice: parseNumber(auctionInfo.biddingInformation?.buyNowPrice),
                 sourceUrl: request.url,
             };
-            // --- NOWA STRATEGIA KONIEC ---
 
             await Dataset.pushData(vehicleData);
             console.log(`✅ Successfully extracted data for VIN: ${vehicleData.vin}`);
