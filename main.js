@@ -19,7 +19,6 @@ const parseNumber = (str) => {
     return isNaN(number) ? null : number;
 };
 
-// Uproszczona funkcja - teraz przyjmuje jeden pełny string daty
 const parseDate = (dateStr) => {
     if (!dateStr) return null;
     try {
@@ -40,16 +39,28 @@ const crawler = new PlaywrightCrawler({
         try {
             await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-            const unavailableMessage = page.locator('h2:has-text("Vehicle Details Are Not Available")');
-            if (await unavailableMessage.isVisible({ timeout: 5000 })) {
+            // --- NOWA, NIEZAWODNA LOGIKA START ---
+            // Czekamy JEDNOCZEŚNIE na jeden z dwóch możliwych elementów:
+            // 1. Tag <script> z danymi (sukces)
+            // 2. Panel z komunikatem o niedostępności (porażka)
+            const successSelector = 'script#ProductDetailsVM';
+            const failureSelector = '.message-panel__title:has-text("Vehicle Details Are Not Available")';
+
+            await page.waitForSelector(`${successSelector}, ${failureSelector}`, {
+                state: 'attached', // Czekamy tylko na obecność w DOM
+                timeout: 20000,    // Wydłużony timeout dla pewności
+            });
+
+            // Teraz sprawdzamy, który z elementów się pojawił.
+            const isUnavailable = await page.locator(failureSelector).count() > 0;
+
+            if (isUnavailable) {
                 console.log(`🟡 Vehicle at ${request.url} is no longer available. Skipping.`);
-                return;
+                return; // Pomiń ten URL i przejdź do następnego
             }
+            // --- NOWA, NIEZAWODNA LOGIKA KONIEC ---
 
-            // --- POPRAWKA TUTAJ ---
-            // Czekamy na tag <script> aż będzie DOŁĄCZONY do DOM, a nie widoczny.
-            await page.waitForSelector('script#ProductDetailsVM', { state: 'attached', timeout: 15000 });
-
+            // Jeśli doszliśmy tutaj, oznacza to, że strona jest poprawna i zawiera dane.
             const jsonData = await page.evaluate(() => {
                 const scriptTag = document.getElementById('ProductDetailsVM');
                 return scriptTag ? JSON.parse(scriptTag.textContent) : null;
@@ -87,7 +98,7 @@ const crawler = new PlaywrightCrawler({
             };
 
             await Dataset.pushData(vehicleData);
-            console.log(`✅ Successfully extracted data for VIN: ${vehicleData.vin}`);
+            console.log(`✅ Successfully extracted data for VIN: ${vehicleData.vin || attributes.StockNumber}`);
 
         } catch (error) {
             console.error(`❌ Failed to process ${request.url}: ${error.message}`);
