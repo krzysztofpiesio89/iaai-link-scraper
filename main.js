@@ -1,12 +1,6 @@
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
-// DOBRA PRAKTYKA: Centralizacja selektorów ułatwia konserwację kodu.
-const SELECTORS = {
-    jsonData: 'script#ProductDetailsVM',
-    unavailableMessage: '.message-panel__title:has-text("Vehicle Details Are Not Available")',
-};
-
 await Actor.init();
 
 console.log('🚀 IAAI Vehicle Detail Scraper (Best Practices Applied) - Starting...');
@@ -16,7 +10,12 @@ const {
     proxyConfiguration,
 } = await Actor.getInput() ?? {};
 
-// --- FUNKCJE POMOCNICZE (bez zmian) ---
+const SELECTORS = {
+    jsonData: 'script#ProductDetailsVM',
+    unavailableMessage: '.message-panel__title:has-text("Vehicle Details Are Not Available")',
+};
+
+// --- FUNKCJE POMOCNICZE ---
 const parseNumber = (str) => {
     if (!str || typeof str !== 'string') return null;
     const cleaned = str.replace(/[$,\smiUSD]/g, '');
@@ -39,26 +38,25 @@ const crawler = new PlaywrightCrawler({
     maxConcurrency: 10,
     navigationTimeoutSecs: 120,
 
-    // DOBRA PRAKTYKA: Użycie log z kontekstu zamiast console.log
     async requestHandler({ page, request, log }) {
-        // DOBRA PRAKTYKA: Użycie stanu zarządzanego przez crawler
         const state = await crawler.useState();
         log.info(`🛠️ Processing: ${request.url}`);
 
         try {
             await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 90000 });
 
-            // Czekamy JEDNOCZEŚNIE na jeden z dwóch możliwych elementów
-            await page.waitForSelector(`${SELECTORS.jsonData}, ${SELECTORS.unavailableMessage}`, {
+            const successSelector = SELECTORS.jsonData;
+            const failureSelector = SELECTORS.unavailableMessage;
+
+            await page.waitForSelector(`${successSelector}, ${failureSelector}`, {
                 state: 'attached',
                 timeout: 25000,
             });
 
-            // Sprawdzamy, który z elementów się pojawił
-            const isUnavailable = await page.locator(SELECTORS.unavailableMessage).count() > 0;
+            const isUnavailable = await page.locator(failureSelector).count() > 0;
             if (isUnavailable) {
                 log.warning(`Vehicle at ${request.url} is no longer available. Skipping.`);
-                state.vehiclesFailed++; // Zliczamy jako błąd/pominięcie
+                state.vehiclesFailed++;
                 return;
             }
 
@@ -106,7 +104,6 @@ const crawler = new PlaywrightCrawler({
             state.vehiclesFailed++;
             log.error(`❌ Failed to process ${request.url}: ${error.message}`);
             
-            // DOBRA PRAKTYKA: Zapisz zrzut ekranu i HTML przy błędzie
             const screenshotBuffer = await page.screenshot({ fullPage: true });
             const html = await page.content();
             
@@ -124,17 +121,17 @@ const crawler = new PlaywrightCrawler({
 });
 
 const startTime = new Date();
-// DOBRA PRAKTYKA: Inicjalizacja stanu przed uruchomieniem.
 await crawler.useState({ vehiclesProcessed: 0, vehiclesFailed: 0 });
 
-log.info('🏃‍♂️ Starting crawler...');
+// POPRAWKA: Użycie `console.log` w globalnym zakresie
+console.log('🏃‍♂️ Starting crawler...');
 await crawler.run(startUrls);
-log.info('✅ Crawler finished.');
+// POPRAWKA: Użycie `console.log` w globalnym zakresie
+console.log('✅ Crawler finished.');
 
 const endTime = new Date();
 const durationInSeconds = Math.round((endTime - startTime) / 1000);
 
-// DOBRA PRAKTYKA: Odczytanie finalnego stanu i przygotowanie podsumowania.
 const finalState = await crawler.useState();
 const finalStats = {
     ...finalState,
@@ -147,7 +144,6 @@ console.log('🎉 Crawling completed!');
 console.log('📊 Final Statistics:', finalStats);
 console.log('='.repeat(50));
 
-// DOBRA PRAKTYKA: Zapisanie finalnych statystyk do Key-Value Store.
 await Actor.setValue('OUTPUT', finalStats);
 
 await Actor.exit();
