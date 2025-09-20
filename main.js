@@ -1,17 +1,22 @@
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
+// DOBRA PRAKTYKA: Centralizacja selektorów ułatwia konserwację kodu.
+const SELECTORS = {
+    jsonData: 'script#ProductDetailsVM',
+    unavailableMessage: '.message-panel__title:has-text("Vehicle Details Are Not Available")',
+};
+
 await Actor.init();
 
-console.log('🚀 IAAI Vehicle Detail Scraper (Optimized with JSON Extraction) - Starting...');
+console.log('🚀 IAAI Vehicle Detail Scraper (Best Practices Applied) - Starting...');
 
-const input = await Actor.getInput() ?? {};
 const {
     startUrls = [],
     proxyConfiguration,
-} = input;
+} = await Actor.getInput() ?? {};
 
-// Funkcje pomocnicze do czyszczenia danych
+// --- FUNKCJE POMOCNICZE (bez zmian) ---
 const parseNumber = (str) => {
     if (!str || typeof str !== 'string') return null;
     const cleaned = str.replace(/[$,\smiUSD]/g, '');
@@ -24,7 +29,7 @@ const parseDate = (dateStr) => {
     try {
         return new Date(dateStr).toISOString();
     } catch (e) {
-        console.log(`Could not parse date: ${dateStr}`);
+        console.warn(`Could not parse date: ${dateStr}`);
         return null;
     }
 };
@@ -32,39 +37,35 @@ const parseDate = (dateStr) => {
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: await Actor.createProxyConfiguration(proxyConfiguration),
     maxConcurrency: 10,
+    navigationTimeoutSecs: 120,
 
-    async requestHandler({ page, request }) {
-        console.log(`🛠️ Processing: ${request.url}`);
+    // DOBRA PRAKTYKA: Użycie log z kontekstu zamiast console.log
+    async requestHandler({ page, request, log }) {
+        // DOBRA PRAKTYKA: Użycie stanu zarządzanego przez crawler
+        const state = await crawler.useState();
+        log.info(`🛠️ Processing: ${request.url}`);
 
         try {
-            await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 90000 });
 
-            // --- NOWA, NIEZAWODNA LOGIKA START ---
-            // Czekamy JEDNOCZEŚNIE na jeden z dwóch możliwych elementów:
-            // 1. Tag <script> z danymi (sukces)
-            // 2. Panel z komunikatem o niedostępności (porażka)
-            const successSelector = 'script#ProductDetailsVM';
-            const failureSelector = '.message-panel__title:has-text("Vehicle Details Are Not Available")';
-
-            await page.waitForSelector(`${successSelector}, ${failureSelector}`, {
-                state: 'attached', // Czekamy tylko na obecność w DOM
-                timeout: 20000,    // Wydłużony timeout dla pewności
+            // Czekamy JEDNOCZEŚNIE na jeden z dwóch możliwych elementów
+            await page.waitForSelector(`${SELECTORS.jsonData}, ${SELECTORS.unavailableMessage}`, {
+                state: 'attached',
+                timeout: 25000,
             });
 
-            // Teraz sprawdzamy, który z elementów się pojawił.
-            const isUnavailable = await page.locator(failureSelector).count() > 0;
-
+            // Sprawdzamy, który z elementów się pojawił
+            const isUnavailable = await page.locator(SELECTORS.unavailableMessage).count() > 0;
             if (isUnavailable) {
-                console.log(`🟡 Vehicle at ${request.url} is no longer available. Skipping.`);
-                return; // Pomiń ten URL i przejdź do następnego
+                log.warning(`Vehicle at ${request.url} is no longer available. Skipping.`);
+                state.vehiclesFailed++; // Zliczamy jako błąd/pominięcie
+                return;
             }
-            // --- NOWA, NIEZAWODNA LOGIKA KONIEC ---
 
-            // Jeśli doszliśmy tutaj, oznacza to, że strona jest poprawna i zawiera dane.
-            const jsonData = await page.evaluate(() => {
-                const scriptTag = document.getElementById('ProductDetailsVM');
+            const jsonData = await page.evaluate((selector) => {
+                const scriptTag = document.querySelector(selector);
                 return scriptTag ? JSON.parse(scriptTag.textContent) : null;
-            });
+            }, SELECTORS.jsonData);
 
             if (!jsonData) {
                 throw new Error('Could not find or parse ProductDetailsVM JSON data on the page.');
@@ -98,14 +99,55 @@ const crawler = new PlaywrightCrawler({
             };
 
             await Dataset.pushData(vehicleData);
-            console.log(`✅ Successfully extracted data for VIN: ${vehicleData.vin || attributes.StockNumber}`);
+            log.info(`✅ Successfully extracted data for VIN: ${vehicleData.vin || attributes.StockNumber}`);
+            state.vehiclesProcessed++;
 
         } catch (error) {
-            console.error(`❌ Failed to process ${request.url}: ${error.message}`);
+            state.vehiclesFailed++;
+            log.error(`❌ Failed to process ${request.url}: ${error.message}`);
+            
+            // DOBRA PRAKTYKA: Zapisz zrzut ekranu i HTML przy błędzie
+            const screenshotBuffer = await page.screenshot({ fullPage: true });
+            const html = await page.content();
+            
+            await Actor.setValue(`ERROR-${request.uniqueKey}.png`, screenshotBuffer, { contentType: 'image/png' });
+            await Actor.setValue(`ERROR-${request.uniqueKey}.html`, html, { contentType: 'text/html' });
+            
+            log.warning(`📸 Screenshot and HTML saved for debugging. Check the Key-Value Store.`);
         }
     },
+    failedRequestHandler: async ({ request, log }) => {
+        const state = await crawler.useState();
+        state.vehiclesFailed++;
+        log.error(`💀 Request completely failed and will not be retried: ${request.url}`);
+    }
 });
 
+const startTime = new Date();
+// DOBRA PRAKTYKA: Inicjalizacja stanu przed uruchomieniem.
+await crawler.useState({ vehiclesProcessed: 0, vehiclesFailed: 0 });
+
+log.info('🏃‍♂️ Starting crawler...');
 await crawler.run(startUrls);
+log.info('✅ Crawler finished.');
+
+const endTime = new Date();
+const durationInSeconds = Math.round((endTime - startTime) / 1000);
+
+// DOBRA PRAKTYKA: Odczytanie finalnego stanu i przygotowanie podsumowania.
+const finalState = await crawler.useState();
+const finalStats = {
+    ...finalState,
+    totalRequests: startUrls.length,
+    duration: `${durationInSeconds}s`,
+};
+
+console.log('\n' + '='.repeat(50));
+console.log('🎉 Crawling completed!');
+console.log('📊 Final Statistics:', finalStats);
+console.log('='.repeat(50));
+
+// DOBRA PRAKTYKA: Zapisanie finalnych statystyk do Key-Value Store.
+await Actor.setValue('OUTPUT', finalStats);
 
 await Actor.exit();
