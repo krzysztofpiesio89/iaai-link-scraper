@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Full Data from List Scraper (Stealth & Proven Logic) - Starting...');
+console.log('🚀 IAAI Full Data from List Scraper (Stealth & Proven Pagination Logic) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -18,7 +18,7 @@ const dataset = await Dataset.open();
 const startTime = new Date();
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime };
 
-// --- ZAKTUALIZOWANA FUNKCJA DO EKSTRAKCJI DANYCH ---
+// --- ZAKTUALIZOWANA FUNKCJA DO EKSTRAKCJI PEŁNYCH DANYCH Z LISTY ---
 const extractVehicleDataFromList = async (page) => {
     return page.evaluate(() => {
         const results = [];
@@ -95,15 +95,59 @@ const handleCookieConsent = async (page) => {
     } catch (error) { /* Ignore */ }
 };
 
-const waitForResults = async (page) => { /* ... bez zmian, można usunąć jeśli nieużywane wprost ... */ };
-const navigateToPageNumber = async (page, pageNumber) => { /* ... Twój nienaruszony kod ... */ };
-const navigateToNextTenPages = async (page) => { /* ... Twój nienaruszony kod ... */ };
+const navigateToPageNumber = async (page, pageNumber) => {
+    try {
+        const pageButtonSelector = `button#PageNumber${pageNumber}`;
+        const pageButton = page.locator(pageButtonSelector);
+        if (await pageButton.count() > 0 && await pageButton.isEnabled()) {
+            console.log(`🔢 Clicking page number button: ${pageNumber}`);
+            const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
+            const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
+            if (!hrefBeforeClick) return false;
+            await pageButton.scrollIntoViewIfNeeded();
+            await pageButton.click();
+            await page.waitForFunction((expectedOldHref) => {
+                const currentFirstLink = document.querySelector('a[href^="/VehicleDetail/"]');
+                return currentFirstLink && currentFirstLink.getAttribute('href') !== expectedOldHref;
+            }, hrefBeforeClick, { timeout: 20000 });
+            console.log(`✅ Successfully navigated to page ${pageNumber}`);
+            return true;
+        }
+        return false;
+    } catch (error) {
+        console.log(`❌ Failed to click page ${pageNumber}: ${error.message}`);
+        return false;
+    }
+};
+
+const navigateToNextTenPages = async (page) => {
+    try {
+        const nextTenButton = page.locator('button.btn-next-10');
+        if (await nextTenButton.count() > 0 && await nextTenButton.isEnabled()) {
+            console.log('⏭️ Clicking "Next 10 Pages"...');
+            const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
+            const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
+            if (!hrefBeforeClick) return false;
+            await nextTenButton.click();
+            await page.waitForFunction((expectedOldHref) => {
+                const currentFirstLink = document.querySelector('a[href^="/VehicleDetail/"]');
+                return currentFirstLink && currentFirstLink.getAttribute('href') !== expectedOldHref;
+            }, hrefBeforeClick, { timeout: 20000 });
+            console.log('✅ Successfully navigated to the next set of pages.');
+            return true;
+        }
+        return false;
+    } catch (error) {
+        console.log(`❌ Failed to click "Next 10 Pages": ${error.message}`);
+        return false;
+    }
+};
 
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
-    maxConcurrency,
-    requestHandlerTimeoutSecs: 300,
+    maxConcurrency, // Używamy zmiennej z input
     navigationTimeoutSecs: 120,
+    requestHandlerTimeoutSecs: 300,
     launchContext: {
         launchOptions: { headless, args: ['--no-sandbox'] }
     },
@@ -118,55 +162,59 @@ const crawler = new PlaywrightCrawler({
     ],
     async requestHandler({ page, request }) {
         console.log(`📖 Processing: ${request.url}`);
-        
-        await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 90000 });
-        
-        if (await checkForCaptcha(page)) {
+        try {
+            await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+            
+            if (await checkForCaptcha(page)) {
+                stats.errors++;
+                throw new Error('CAPTCHA detected. Use RESIDENTIAL proxies.');
+            }
+
+            await handleCookieConsent(page);
+            await page.waitForSelector('div.table-row-border', { timeout: 30000 });
+
+            let currentPage = 1;
+            while (currentPage <= maxPages) {
+                console.log(`\n📄 === Scraping page ${currentPage} ===`);
+                
+                const vehiclesData = await extractVehicleDataFromList(page);
+                console.log(`✅ Found data for ${vehiclesData.length} vehicles on page ${currentPage}`);
+
+                if (vehiclesData.length > 0) {
+                    stats.vehiclesFound += vehiclesData.length;
+                    await dataset.pushData(vehiclesData);
+                } else {
+                   console.log('⚠️ No vehicles found on this page, stopping pagination.');
+                   break;
+                }
+                
+                stats.pagesProcessed = currentPage;
+
+                if (currentPage >= maxPages) {
+                    console.log(`🏁 Reached maxPages limit of ${maxPages}. Stopping.`);
+                    break;
+                }
+                
+                const nextPageNumber = currentPage + 1;
+                let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
+
+                if (!navigationSuccess) {
+                    console.log(`🔢 Button for page ${nextPageNumber} not found. Attempting to jump to the next 10 pages.`);
+                    navigationSuccess = await navigateToNextTenPages(page);
+                }
+
+                if (navigationSuccess) {
+                    currentPage++;
+                } else {
+                    console.log('🏁 No more navigation buttons available. This is the true end of pagination.');
+                    break;
+                }
+            }
+        } catch (error) {
             stats.errors++;
-            throw new Error('CAPTCHA detected. Use RESIDENTIAL proxies.');
-        }
-
-        await handleCookieConsent(page);
-        
-        // Czekamy na załadowanie wyników przed rozpoczęciem pętli
-        await page.waitForSelector('div.table-row-border', { timeout: 30000 });
-
-        let currentPage = 1;
-        while (currentPage <= maxPages) {
-            console.log(`\n📄 === Scraping page ${currentPage} ===`);
-            
-            const vehiclesData = await extractVehicleDataFromList(page);
-            console.log(`✅ Found data for ${vehiclesData.length} vehicles on page ${currentPage}`);
-
-            if (vehiclesData.length > 0) {
-                stats.vehiclesFound += vehiclesData.length;
-                await dataset.pushData(vehiclesData);
-            } else {
-               console.log('⚠️ No vehicles found on this page, stopping pagination.');
-               break;
-            }
-            
-            stats.pagesProcessed = currentPage;
-
-            if (currentPage >= maxPages) {
-                console.log(`🏁 Reached maxPages limit of ${maxPages}. Stopping.`);
-                break;
-            }
-            
-            const nextPageNumber = currentPage + 1;
-            let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
-
-            if (!navigationSuccess) {
-                console.log(`🔢 Button for page ${nextPageNumber} not found. Attempting to jump to the next 10 pages.`);
-                navigationSuccess = await navigateToNextTenPages(page);
-            }
-
-            if (navigationSuccess) {
-                currentPage++;
-            } else {
-                console.log('🏁 No more navigation buttons available. This is the true end of pagination.');
-                break;
-            }
+            console.error(`❌ Main error on ${request.url}: ${error.message}`);
+            // Rzucamy błąd dalej, aby `failedRequestHandler` mógł go obsłużyć
+            throw error;
         }
     },
     failedRequestHandler: async ({ request, page }) => {
@@ -194,4 +242,5 @@ console.log('📊 Final Statistics:', {
 });
 console.log('='.repeat(50));
 
+await Actor.setValue('OUTPUT', stats);
 await Actor.exit();
