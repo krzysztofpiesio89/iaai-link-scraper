@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (v2 - Corrected Selectors) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -20,14 +20,20 @@ const dataset = await Dataset.open();
 
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
 
-// --- ZMODYFIKOWANA FUNKCJA DO EKSTRAKCJI WSZYSTKICH DANYCH ---
+// --- POPRAWIONA FUNKCJA DO EKSTRAKCJI DANYCH (NA PODSTAWIE DOM) ---
 const extractVehicleDataFromList = async (page) => {
     return page.evaluate(() => {
         const results = [];
-        // Główny selektor dla każdego pojazdu na liście
         document.querySelectorAll('div.table-row.table-row-border').forEach(row => {
             try {
-                // --- Funkcja pomocnicza do bezpiecznego pobierania tekstu z elementu ---
+                // --- Funkcje pomocnicze do pobierania tekstu ---
+                // Pobiera tekst z elementu, którego atrybut 'title' zaczyna się od danego tekstu
+                const getTextByTitle = (prefix) => {
+                    const element = row.querySelector(`span[title^="${prefix}"]`);
+                    return element ? element.textContent.trim() : null;
+                };
+                
+                // Pobiera tekst z dowolnego selektora
                 const getText = (selector) => {
                     const element = row.querySelector(selector);
                     return element ? element.textContent.trim() : null;
@@ -35,67 +41,66 @@ const extractVehicleDataFromList = async (page) => {
 
                 // --- Podstawowe informacje ---
                 const linkElement = row.querySelector('h4.heading-7 a');
-                if (!linkElement) return; // Pomiń wiersz, jeśli brakuje kluczowego elementu (linku)
+                if (!linkElement) return; // Pomiń wiersz, jeśli brakuje linku
 
                 const detailUrl = new URL(linkElement.getAttribute('href'), location.origin).href;
                 const title = linkElement.textContent.trim();
                 const imageUrl = row.querySelector('.table-cell--image img')?.getAttribute('data-src') || row.querySelector('.table-cell--image img')?.getAttribute('src');
-                const yearMatch = title.match(/^\d{4}/);
-                const year = yearMatch ? yearMatch[0] : null;
-                const make = year ? title.substring(5).split(' ')[0] : null;
-                const model = make ? title.substring(5 + make.length).trim() : title;
 
-                // --- Inicjalizacja nowych pól ---
+                // --- Precyzyjna ekstrakcja danych na podstawie nowego HTML ---
                 let stock = null;
                 let vin = null;
-                let engineInfo = null;
-                let fuelType = null;
-                let cylinders = null;
-
-                // --- Pobieranie danych z listy (metoda pętli jest bardziej odporna na błędy) ---
-                const dataItems = row.querySelectorAll('.data-list__item');
-                dataItems.forEach(item => {
+                
+                // Pobieranie Stock i VIN wymaga specjalnego podejścia
+                 const dataItems = row.querySelectorAll('.data-list__item');
+                 dataItems.forEach(item => {
                     const labelElement = item.querySelector('.data-list__label');
                     if (labelElement) {
-                        const label = labelElement.textContent.trim();
-                        const valueElement = item.querySelector('.data-list__value');
-                        const value = valueElement ? valueElement.textContent.trim() : null;
+                        const labelText = labelElement.textContent.trim();
+                        if (labelText.startsWith('Stock #:')) {
+                            stock = item.querySelector('.data-list__value')?.textContent.trim() || null;
+                        }
+                        if (labelText.startsWith('VIN:')) {
+                            // Wartość VIN znajduje się w następnym elemencie, który nie ma klasy '.data-list__value'
+                            vin = labelElement.nextElementSibling?.textContent.trim() || null;
+                        }
+                    }
+                });
 
-                        if (label === 'Stock #:') stock = value;
-                        if (label === 'VIN:') vin = value;
+                // Typ uszkodzenia
+                const primaryDamage = getTextByTitle("Primary Damage:");
+                const lossType = getTextByTitle("Loss:");
+                const damageParts = [primaryDamage, lossType].filter(Boolean); // Łączy oba typy i usuwa puste wartości
+                const damageType = damageParts.length > 0 ? damageParts.join(' / ') : "";
+                
+                // Pozostałe pola pobierane za pomocą atrybutu 'title'
+                const mileage = getTextByTitle("Odometer:");
+                const engineInfo = getTextByTitle("Engine:");
+                const fuelType = getTextByTitle("Fuel Type:");
+                const cylinders = getTextByTitle("Cylinder:");
+                const origin = getText('span[title^="Branch:"] a');
+
+                // Status silnika (np. Run & Drive)
+                const engineStatus = getText('.badge'); // Ten selektor jest prostszy i prawidłowy
+
+                // --- Ceny ---
+                // W dostarczonym HTML nie ma aktualnej ceny licytacji, jest tylko przycisk "Pre-Bid".
+                // Skrypt pobierze tekst z przycisku lub cenę, jeśli będzie dostępna.
+                const bidPrice = getText('.btn--pre-bid') || getText('[data-testid="current-bid-price"]'); 
+
+                // Cena Kup Teraz
+                let buyNowPrice = null;
+                const actionLinks = row.querySelectorAll('.data-list--action a');
+                actionLinks.forEach(link => {
+                    const linkText = link.textContent.trim();
+                    if (linkText.startsWith('Buy Now')) {
+                        buyNowPrice = linkText.replace('Buy Now ', ''); // Usuwa "Buy Now" zostawiając samą cenę
                     }
                 });
                 
-                // --- Ekstrakcja danych z bardziej specyficznych selektorów ---
-
-                // Przebieg (często w dedykowanym kontenerze)
-                const mileage = getText('[data-testid="vehicle-mileage"]');
-
-                // Typ uszkodzenia (zazwyczaj jako tagi/pigułki)
-                const damageElements = row.querySelectorAll('[data-testid="damage-type"] .pill__text');
-                const damageType = Array.from(damageElements).map(el => el.textContent.trim()).join(' / ');
-
-                // Status silnika (np. Run & Drive)
-                const engineStatus = getText('[data-testid="start-code-mobile"] .pill__text, [data-testid="status-container-desktop"] .pill__text');
-                
-                // Pochodzenie (oddział IAA)
-                const origin = getText('.data-list__item--branch a');
-
-                // Informacje o silniku i paliwie
-                const engineFuelElements = row.querySelectorAll('[data-testid="engine-fuel-info"] .data-list__value');
-                if (engineFuelElements.length > 0) engineInfo = engineFuelElements[0].textContent.trim();
-                if (engineFuelElements.length > 1) fuelType = engineFuelElements[1].textContent.trim();
-                if (engineFuelElements.length > 2) cylinders = engineFuelElements[2].textContent.trim();
-
-
-                // --- Informacje o cenie ---
-                const bidPrice = getText('[data-testid="pre-bid-price"], [data-testid="current-bid-price"]'); // Obsługuje zarówno "Pre-Bid", jak i aktualną licytację
-                const buyNowPrice = getText('[data-testid="buy-now-price-desktop"]');
-
-                // --- Tworzenie linku do wideo ---
+                // Link do wideo
                 const videoUrl = stock ? `https://mediastorageaccountprod.blob.core.windows.net/media/${stock}_VES-100_1` : null;
 
-                // --- Dodanie wszystkich zebranych danych do wyników ---
                 results.push({
                     stock,
                     title,
@@ -113,7 +118,6 @@ const extractVehicleDataFromList = async (page) => {
                     detailUrl,
                     imageUrl,
                 });
-
             } catch (e) {
                 console.warn('Could not process a vehicle row:', e.message);
             }
