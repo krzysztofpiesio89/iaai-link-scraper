@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Advanced Data Scraper (v2 - Robust Modal Handling) - Starting...');
+console.log('🚀 IAAI Basic Data Scraper (Proven Pagination Logic) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -20,7 +20,7 @@ const dataset = await Dataset.open();
 
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
 
-// --- FUNKCJA DO EKSTRAKCJI STATYCZNYCH DANYCH Z LISTY (BEZ ZMIAN) ---
+// --- FUNKCJA DO EKSTRAKCJI DANYCH (z dodanym polem 'stock') ---
 const extractVehicleDataFromList = async (page) => {
     return page.evaluate(() => {
         const results = [];
@@ -30,59 +30,35 @@ const extractVehicleDataFromList = async (page) => {
                 const imageElement = row.querySelector('.table-cell--image img');
                 if (!linkElement || !imageElement) return;
 
+                const detailUrl = new URL(linkElement.getAttribute('href'), location.origin).href;
+                const imageUrl = imageElement.getAttribute('data-src') || imageElement.getAttribute('src');
                 const title = linkElement.textContent.trim();
-                const yearMatch = title.match(/^\d{4}/);
                 
-                const vehicleData = {
-                    detailUrl: new URL(linkElement.getAttribute('href'), location.origin).href,
-                    imageUrl: imageElement.getAttribute('data-src') || imageElement.getAttribute('src'),
-                    title: title,
-                    year: yearMatch ? yearMatch[0] : null,
-                    make: yearMatch ? title.substring(5).split(' ')[0] : null,
-                    model: yearMatch ? title.substring(5 + (title.substring(5).split(' ')[0]).length).trim() : title,
-                };
+                const yearMatch = title.match(/^\d{4}/);
+                const year = yearMatch ? yearMatch[0] : null;
+                const make = year ? title.substring(5).split(' ')[0] : null;
+                const model = make ? title.substring(5 + make.length).trim() : title;
 
-                const keyMap = {
-                    'Stock #:': 'stock', 'VIN:': 'vin', 'Odometer:': 'odometer',
-                    'Start Code:': 'startCode', 'Key:': 'key', 'Engine:': 'engine',
-                    'Cylinders:': 'cylinders', 'Fuel Type:': 'fuelType', 'Location:': 'location',
-                    'Sale Document:': 'saleDocument', 'ACV:': 'acv',
-                };
-
-                row.querySelectorAll('.data-list__item').forEach(item => {
+                let stock = null;
+                const dataItems = row.querySelectorAll('.data-list__item');
+                dataItems.forEach(item => {
                     const labelElement = item.querySelector('.data-list__label');
-                    const valueElement = item.querySelector('.data-list__value');
-
-                    if (labelElement && valueElement) {
-                        const labelText = labelElement.textContent.trim();
-                        const key = keyMap[labelText];
-                        if (key) {
-                            vehicleData[key] = valueElement.textContent.trim();
+                    if (labelElement && labelElement.textContent.trim() === 'Stock #:') {
+                        const valueElement = item.querySelector('.data-list__value');
+                        if (valueElement) {
+                            stock = valueElement.textContent.trim();
                         }
                     }
                 });
 
-                const tags = [];
-                const primaryDataCell = row.querySelector('.table-cell--data-1');
-                if (primaryDataCell) {
-                    primaryDataCell.querySelectorAll('.data-list__value--damage').forEach(tagEl => {
-                        const text = tagEl.textContent.trim();
-                        if (text) tags.push(text);
-                    });
-                }
-                vehicleData.conditionTags = tags.join(' | ');
-
-                const auctionCell = row.querySelector('.table-cell--data-3');
-                if (auctionCell) {
-                    const auctionDateEl = auctionCell.querySelector('[id^="auctionDate"]');
-                    const bidStatusEl = auctionCell.querySelector('.btn--tertiary-light');
-                    const buyNowPriceEl = auctionCell.querySelector('.btn--primary-cta');
-                    if (auctionDateEl) vehicleData.auctionDate = auctionDateEl.textContent.trim();
-                    if (bidStatusEl) vehicleData.biddingStatus = bidStatusEl.textContent.trim();
-                    if (buyNowPriceEl) vehicleData.buyNowPrice = buyNowPriceEl.textContent.replace(/Buy Now/i, '').trim();
-                }
-                
-                results.push(vehicleData);
+                results.push({
+                    detailUrl,
+                    year,
+                    make,
+                    model,
+                    imageUrl,
+                    stock,
+                });
             } catch (e) {
                 console.warn('Could not process a vehicle row:', e.message);
             }
@@ -91,10 +67,11 @@ const extractVehicleDataFromList = async (page) => {
     });
 };
 
-// --- FUNKCJE POMOCNICZE (BEZ ZMIAN) ---
+// *** NOWA FUNKCJA POMOCNICZA DO CZEKANIA NA ZNIKNIĘCIE LOADERA ***
 const waitForLoaderToDisappear = async (page, timeout = 20000) => {
     try {
         console.log('...waiting for page loader to disappear...');
+        // Czekamy na selektor loadera, aż będzie ukryty
         await page.waitForSelector('.circle-loader-shape', { state: 'hidden', timeout });
         console.log('✅ Loader disappeared.');
     } catch (e) {
@@ -117,10 +94,13 @@ const handleCookieConsent = async (page) => {
     return false;
 };
 
+// --- ZMODYFIKOWANA FUNKCJA ---
 const waitForResults = async (page, timeout = 25000) => {
     console.log('⏳ Waiting for search results to load...');
     try {
+        // Najpierw czekamy, aż załadują się linki
         await page.waitForSelector('a[href^="/VehicleDetail/"]', { timeout });
+        // A potem upewniamy się, że loader zniknął
         await waitForLoaderToDisappear(page);
         console.log('✅ Vehicle detail links found and page is ready.');
         return true;
@@ -130,6 +110,7 @@ const waitForResults = async (page, timeout = 25000) => {
     }
 };
 
+// --- ZMODYFIKOWANA FUNKCJA ---
 const navigateToPageNumber = async (page, pageNumber) => {
     try {
         const pageButtonSelector = `button#PageNumber${pageNumber}`;
@@ -139,6 +120,7 @@ const navigateToPageNumber = async (page, pageNumber) => {
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
             
+            // *** ZMIANA: Czekamy na zniknięcie loadera PRZED klikiem ***
             await waitForLoaderToDisappear(page);
             await pageButton.scrollIntoViewIfNeeded();
             await pageButton.click();
@@ -158,6 +140,7 @@ const navigateToPageNumber = async (page, pageNumber) => {
     }
 };
 
+// --- ZMODYFIKOWANA FUNKCJA ---
 const navigateToNextTenPages = async (page) => {
     try {
         const nextTenButton = page.locator('button.btn-next-10');
@@ -166,6 +149,7 @@ const navigateToNextTenPages = async (page) => {
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
 
+            // *** ZMIANA: Czekamy na zniknięcie loadera PRZED klikiem ***
             await waitForLoaderToDisappear(page);
             await nextTenButton.click();
             
@@ -184,21 +168,20 @@ const navigateToNextTenPages = async (page) => {
     }
 };
 
-
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
     maxConcurrency,
-    requestHandlerTimeoutSecs: 600,
+    requestHandlerTimeoutSecs: 300,
     navigationTimeoutSecs: 120,
     launchContext: { launchOptions: { headless, args: ['--no-sandbox'] } },
 
-    // --- ZAKTUALIZOWANY I POPRAWIONY REQUEST HANDLER ---
     async requestHandler({ page, request }) {
         console.log(`📖 Processing: ${request.url}`);
         try {
             await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
             await handleCookieConsent(page);
             if (!await waitForResults(page)) {
+                // Jeśli po załadowaniu nie ma wyników, nie ma sensu kontynuować
                 console.log('Stopping processing for this URL as no results were found.');
                 return;
             }
@@ -207,84 +190,15 @@ const crawler = new PlaywrightCrawler({
             while (currentPage <= maxPages) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
 
-                const staticVehiclesData = await extractVehicleDataFromList(page);
-                
-                if (staticVehiclesData.length === 0) {
-                    console.log('⚠️ No vehicles found on this page, stopping pagination.');
-                    break;
-                }
+                const vehiclesData = await extractVehicleDataFromList(page);
+                console.log(`✅ Found ${vehiclesData.length} vehicles on page ${currentPage}`);
 
-                const vehicleRows = await page.locator('div.table-row.table-row-border').all();
-                
-                const itemsToProcessCount = Math.min(staticVehiclesData.length, vehicleRows.length);
-                console.log(`🔎 Found ${itemsToProcessCount} vehicles to process on this page.`);
-
-                const pageResults = [];
-                for (let i = 0; i < itemsToProcessCount; i++) {
-                    const vehicleData = staticVehiclesData[i];
-                    const row = vehicleRows[i];
-                    console.log(`  -> Processing vehicle ${i + 1}/${itemsToProcessCount}: ${vehicleData.title}`);
-
-                    try {
-                        // ZMIANA: Wyszukiwanie przycisku po tekście
-                        const viewImagesButton = row.getByText('View All Images');
-                        if (await viewImagesButton.count() > 0) {
-                            console.log('     - Clicking "View All Images" button...');
-                            await viewImagesButton.scrollIntoViewIfNeeded();
-                            await viewImagesButton.click();
-
-                            // ZMIANA: Poprawione oczekiwanie na modal (klasa .in lub .show)
-                            await page.waitForSelector('#image_360Modal.in, #image_360Modal.show', { state: 'visible', timeout: 15000 });
-                            console.log('     - Modal opened.');
-                            
-                            await page.waitForSelector('#hdnDimensions', { state: 'attached', timeout: 10000 });
-
-                            const jsonText = await page.locator('#hdnDimensions').textContent();
-                            const imageData = JSON.parse(jsonText);
-                            
-                            const allImageUrls = imageData.keys?.map(keyObj => `https://vis.iaai.com/resizer?imageKeys=${keyObj.K}&width=1920`) || [];
-                            const videoUrls = imageData.Videos?.map(video => video.URL) || [];
-                            
-                            vehicleData.allImageUrls = allImageUrls;
-                            vehicleData.videoUrls = videoUrls;
-                            console.log(`     - ✅ Extracted ${allImageUrls.length} images and ${videoUrls.length} videos.`);
-                            
-                            console.log('     - Closing modal...');
-                            await page.locator('#image_360Modal button[data-dismiss="modal"]').first().click();
-                             // ZMIANA: Poprawione oczekiwanie na zniknięcie modala
-                            await page.waitForSelector('#image_360Modal.in, #image_360Modal.show', { state: 'hidden', timeout: 10000 });
-                            await page.waitForTimeout(250);
-                        } else {
-                            console.log('     - "View All Images" button not found.');
-                            vehicleData.allImageUrls = [];
-                            vehicleData.videoUrls = [];
-                        }
-                    } catch (e) {
-                        console.warn(`     - ❌ Error processing image modal for ${vehicleData.title}: ${e.message}`);
-                        vehicleData.allImageUrls = vehicleData.allImageUrls || [];
-                        vehicleData.videoUrls = vehicleData.videoUrls || [];
-                        
-                        // ZMIANA: Ulepszona logika odzyskiwania, gdy modal utknie
-                        if (await page.locator('#image_360Modal.in, #image_360Modal.show').isVisible({ timeout: 1000 })) {
-                           console.log('     - Modal seems stuck. Attempting to force close it...');
-                           try {
-                               await page.locator('#image_360Modal button[data-dismiss="modal"]').first().click({ timeout: 5000 });
-                               await page.waitForSelector('#image_360Modal.in, #image_360Modal.show', { state: 'hidden', timeout: 10000 });
-                               console.log('     - Successfully force-closed the modal.');
-                           } catch (closeError) {
-                               console.warn(`     - Could not force-close the modal: ${closeError.message}. Reloading page as a last resort.`);
-                               await page.reload({ waitUntil: 'domcontentloaded' });
-                               break; // Przerwij pętlę dla tej strony, bo stan został zresetowany
-                           }
-                        }
-                    }
-                    pageResults.push(vehicleData);
-                }
-
-                if (pageResults.length > 0) {
-                    console.log(`💾 Pushing ${pageResults.length} vehicle records from page ${currentPage} to the dataset.`);
-                    await dataset.pushData(pageResults);
-                    stats.vehiclesFound += pageResults.length;
+                if (vehiclesData.length > 0) {
+                    stats.vehiclesFound += vehiclesData.length;
+                    await dataset.pushData(vehiclesData);
+                } else {
+                   console.log('⚠️ No vehicles found on this page, stopping pagination.');
+                   break;
                 }
                 
                 stats.pagesProcessed = currentPage;
