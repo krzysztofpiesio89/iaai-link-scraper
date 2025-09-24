@@ -20,7 +20,7 @@ const dataset = await Dataset.open();
 
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
 
-// --- NOWA FUNKCJA DO EKSTRAKCJI DANYCH, ZASTĘPUJE STARĄ extractAuctionLinks ---
+// --- FUNKCJA ZAKTUALIZOWANA O POBIERANIE NUMERU STOCK ---
 const extractVehicleDataFromList = async (page) => {
     return page.evaluate(() => {
         const results = [];
@@ -42,12 +42,29 @@ const extractVehicleDataFromList = async (page) => {
                 const make = year ? title.substring(5).split(' ')[0] : null;
                 const model = make ? title.substring(5 + make.length).trim() : title;
 
+                // --- POCZĄTEK DODANEJ LOGIKI ---
+                let stock = null;
+                // Znajdź wszystkie elementy z danymi w obrębie jednego pojazdu
+                const dataItems = row.querySelectorAll('.data-list__item');
+                // Przejdź przez nie, aby znaleźć ten z etykietą "Stock #:"
+                dataItems.forEach(item => {
+                    const labelElement = item.querySelector('.data-list__label');
+                    if (labelElement && labelElement.textContent.trim() === 'Stock #:') {
+                        const valueElement = item.querySelector('.data-list__value');
+                        if (valueElement) {
+                            stock = valueElement.textContent.trim();
+                        }
+                    }
+                });
+                // --- KONIEC DODANEJ LOGIKI ---
+
                 results.push({
                     detailUrl,
                     year,
                     make,
                     model,
                     imageUrl,
+                    stock, // <-- DODANE POLE
                 });
             } catch (e) {
                 console.warn('Could not process a vehicle row:', e.message);
@@ -229,7 +246,8 @@ console.log('🏃‍♂️ Starting crawler...');
 await crawler.run();
 
 stats.endTime = new Date();
-stats.duration = (stats.endTime - startTime);
+// Mały błąd w oryginalnym kodzie, powinno być stats.startTime, a nie startTime
+stats.duration = (stats.endTime - stats.startTime); 
 console.log('\n' + '='.repeat(50));
 console.log('🎉 Crawling completed!');
 console.log('📊 Final Statistics:', {
