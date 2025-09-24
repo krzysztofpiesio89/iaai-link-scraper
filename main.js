@@ -1,8 +1,9 @@
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
+// Initialize the Actor
 await Actor.init();
-console.log('🚀 IAAI Basic Data Scraper (Proven Pagination Logic) - Starting...');
+console.log('🚀 IAAI Full Data from List Scraper - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -20,35 +21,60 @@ const dataset = await Dataset.open();
 
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
 
-// --- NOWA FUNKCJA DO EKSTRAKCJI DANYCH, ZASTĘPUJE STARĄ extractAuctionLinks ---
+// --- ZAKTUALIZOWANA FUNKCJA DO EKSTRAKCJI PEŁNYCH DANYCH Z LISTY ---
 const extractVehicleDataFromList = async (page) => {
+    // Ta funkcja jest wykonywana w przeglądarce. Musi być samowystarczalna.
     return page.evaluate(() => {
         const results = [];
-        // Każdy pojazd jest w kontenerze 'div.table-row.table-row-border'
+        // Każdy pojazd na liście znajduje się w kontenerze z tymi klasami
         document.querySelectorAll('div.table-row.table-row-border').forEach(row => {
             try {
-                // Używamy bardziej precyzyjnych selektorów wewnątrz każdego wiersza
+                // Funkcja pomocnicza do pobierania tekstu z atrybutu title
+                const getValueByTitle = (label) => {
+                    const element = row.querySelector(`[title^="${label}"]`);
+                    // Zwraca tekst widoczny dla użytkownika, jest bardziej niezawodny
+                    return element ? element.textContent.trim() : null;
+                };
+
                 const linkElement = row.querySelector('h4.heading-7 a');
                 const imageElement = row.querySelector('.table-cell--image img');
-                
                 if (!linkElement || !imageElement) return;
 
-                const detailUrl = new URL(linkElement.getAttribute('href'), location.origin).href;
-                const imageUrl = imageElement.getAttribute('data-src') || imageElement.getAttribute('src');
                 const title = linkElement.textContent.trim();
-                
                 const yearMatch = title.match(/^\d{4}/);
                 const year = yearMatch ? yearMatch[0] : null;
                 const make = year ? title.substring(5).split(' ')[0] : null;
                 const model = make ? title.substring(5 + make.length).trim() : title;
 
-                results.push({
-                    detailUrl,
+                const buyNowLink = row.querySelector('a:has-text("Buy Now")');
+                const preBidButton = row.querySelector('.btn--pre-bid');
+
+                const vehicleData = {
+                    detailUrl: new URL(linkElement.getAttribute('href'), location.origin).href,
+                    imageUrl: imageElement.getAttribute('data-src') || imageElement.getAttribute('src'),
                     year,
                     make,
                     model,
-                    imageUrl,
-                });
+                    stockNumber: getValueByTitle('Stock #:'),
+                    titleStatus: getValueByTitle('Title/Sale Doc:'),
+                    primaryDamage: getValueByTitle('Primary Damage:'),
+                    odometer: getValueByTitle('Odometer:'),
+                    startCode: row.querySelector('.badge')?.textContent.trim() || null,
+                    airbags: getValueByTitle('Airbags:'),
+                    keyStatus: getValueByTitle('Key :'),
+                    engine: getValueByTitle('Engine:'),
+                    fuelType: getValueByTitle('Fuel Type:'),
+                    cylinders: getValueByTitle('Cylinder:'),
+                    vin: row.querySelector('[name*="******"]')?.getAttribute('name') || null,
+                    branchLocation: row.querySelector('a[href*="/locations/"]')?.textContent.trim() || null,
+                    laneRun: getValueByTitle('Lane/Run#:'),
+                    aisleStall: getValueByTitle('Aisle/Stall:'),
+                    market: getValueByTitle('Market:'),
+                    acv: getValueByTitle('ACV:'),
+                    auctionDate: row.querySelector('.data-list__value--action')?.textContent.trim().split('\n')[0] || null,
+                    biddingStatus: buyNowLink ? buyNowLink.textContent.trim() : (preBidButton ? preBidButton.textContent.trim() : null),
+                };
+                results.push(vehicleData);
             } catch (e) {
                 console.warn('Could not process a vehicle row:', e.message);
             }
@@ -56,7 +82,6 @@ const extractVehicleDataFromList = async (page) => {
         return results;
     });
 };
-
 
 // ## ORYGINALNE FUNKCJE POMOCNICZE (BEZ ZMIAN) ##
 const checkForCaptcha = async (page) => {
@@ -108,7 +133,7 @@ const navigateToPageNumber = async (page, pageNumber) => {
     try {
         const pageButtonSelector = `button#PageNumber${pageNumber}`;
         const pageButton = page.locator(pageButtonSelector);
-        if (await pageButton.count() > 0) {
+        if (await pageButton.count() > 0 && await pageButton.isEnabled()) {
             console.log(`🔢 Clicking page number button: ${pageNumber}`);
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
@@ -165,22 +190,33 @@ const crawler = new PlaywrightCrawler({
     maxConcurrency,
     requestHandlerTimeoutSecs: 300,
     navigationTimeoutSecs: 120,
-    launchContext: { launchOptions: { headless, args: ['--no-sandbox'] } },
+    launchContext: {
+        launchOptions: {
+            headless,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage']
+        },
+        useChrome: true,
+    },
 
     async requestHandler({ page, request }) {
         console.log(`📖 Processing: ${request.url}`);
         try {
+            await page.setViewportSize({ width: 1920, height: 1080 });
             await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            
+            if (await checkForCaptcha(page)) {
+                throw new Error('CAPTCHA detected, cannot proceed.');
+            }
+
             await handleCookieConsent(page);
             await waitForResults(page);
 
             let currentPage = 1;
             while (currentPage <= maxPages) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
-
-                // --- MODYFIKACJA: Używamy nowej funkcji i inaczej zapisujemy dane ---
+                
                 const vehiclesData = await extractVehicleDataFromList(page);
-                console.log(`✅ Found ${vehiclesData.length} vehicles on page ${currentPage}`);
+                console.log(`✅ Found data for ${vehiclesData.length} vehicles on page ${currentPage}`);
 
                 if (vehiclesData.length > 0) {
                     stats.vehiclesFound += vehiclesData.length;
@@ -197,7 +233,6 @@ const crawler = new PlaywrightCrawler({
                     break;
                 }
                 
-                // --- ORYGINALNA, DZIAŁAJĄCA LOGIKA PAGINACJI ---
                 const nextPageNumber = currentPage + 1;
                 let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
 
