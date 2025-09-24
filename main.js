@@ -20,17 +20,14 @@ const dataset = await Dataset.open();
 
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
 
-// --- FUNKCJA ZAKTUALIZOWANA O POBIERANIE NUMERU STOCK ---
+// --- FUNKCJA DO EKSTRAKCJI DANYCH (z dodanym polem 'stock') ---
 const extractVehicleDataFromList = async (page) => {
     return page.evaluate(() => {
         const results = [];
-        // Każdy pojazd jest w kontenerze 'div.table-row.table-row-border'
         document.querySelectorAll('div.table-row.table-row-border').forEach(row => {
             try {
-                // Używamy bardziej precyzyjnych selektorów wewnątrz każdego wiersza
                 const linkElement = row.querySelector('h4.heading-7 a');
                 const imageElement = row.querySelector('.table-cell--image img');
-                
                 if (!linkElement || !imageElement) return;
 
                 const detailUrl = new URL(linkElement.getAttribute('href'), location.origin).href;
@@ -42,11 +39,8 @@ const extractVehicleDataFromList = async (page) => {
                 const make = year ? title.substring(5).split(' ')[0] : null;
                 const model = make ? title.substring(5 + make.length).trim() : title;
 
-                // --- POCZĄTEK DODANEJ LOGIKI ---
                 let stock = null;
-                // Znajdź wszystkie elementy z danymi w obrębie jednego pojazdu
                 const dataItems = row.querySelectorAll('.data-list__item');
-                // Przejdź przez nie, aby znaleźć ten z etykietą "Stock #:"
                 dataItems.forEach(item => {
                     const labelElement = item.querySelector('.data-list__label');
                     if (labelElement && labelElement.textContent.trim() === 'Stock #:') {
@@ -56,7 +50,6 @@ const extractVehicleDataFromList = async (page) => {
                         }
                     }
                 });
-                // --- KONIEC DODANEJ LOGIKI ---
 
                 results.push({
                     detailUrl,
@@ -64,7 +57,7 @@ const extractVehicleDataFromList = async (page) => {
                     make,
                     model,
                     imageUrl,
-                    stock, // <-- DODANE POLE
+                    stock,
                 });
             } catch (e) {
                 console.warn('Could not process a vehicle row:', e.message);
@@ -74,27 +67,21 @@ const extractVehicleDataFromList = async (page) => {
     });
 };
 
-
-// ## ORYGINALNE FUNKCJE POMOCNICZE (BEZ ZMIAN) ##
-const checkForCaptcha = async (page) => {
-    const captchaSelectors = ['iframe[src*="recaptcha"]', '.g-recaptcha', '.h-captcha', '.cf-challenge-form', '#challenge-form'];
-    for (const sel of captchaSelectors) {
-        if (await page.isVisible(sel, { timeout: 2000 })) return true;
+// *** NOWA FUNKCJA POMOCNICZA DO CZEKANIA NA ZNIKNIĘCIE LOADERA ***
+const waitForLoaderToDisappear = async (page, timeout = 20000) => {
+    try {
+        console.log('...waiting for page loader to disappear...');
+        // Czekamy na selektor loadera, aż będzie ukryty
+        await page.waitForSelector('.circle-loader-shape', { state: 'hidden', timeout });
+        console.log('✅ Loader disappeared.');
+    } catch (e) {
+        console.log('⚠️ Loader did not disappear in time, but continuing anyway.');
     }
-    const title = (await page.title()).toLowerCase();
-    const pageText = (await page.evaluate(() => document.body?.innerText?.toLowerCase() || ''));
-    return ['verify you are human', 'robot', 'captcha', 'challenge'].some(k => title.includes(k) || pageText.includes(k));
 };
 
 const handleCookieConsent = async (page) => {
     try {
-        const cookieSelectors = [
-            '#truste-consent-button',
-            'button[class*="cookie"]',
-            'button[class*="consent"]',
-            '.cookie-banner button',
-            '[id*="accept-cookies"]'
-        ];
+        const cookieSelectors = ['#truste-consent-button'];
         for (const selector of cookieSelectors) {
             const button = page.locator(selector).first();
             if (await button.isVisible({ timeout: 2000 })) {
@@ -103,17 +90,19 @@ const handleCookieConsent = async (page) => {
                 return true;
             }
         }
-    } catch (error) {
-        // Ignore errors
-    }
+    } catch (error) { /* Ignore */ }
     return false;
 };
 
-const waitForResults = async (page, timeout = 15000) => {
+// --- ZMODYFIKOWANA FUNKCJA ---
+const waitForResults = async (page, timeout = 25000) => {
     console.log('⏳ Waiting for search results to load...');
     try {
+        // Najpierw czekamy, aż załadują się linki
         await page.waitForSelector('a[href^="/VehicleDetail/"]', { timeout });
-        console.log('✅ Vehicle detail links found');
+        // A potem upewniamy się, że loader zniknął
+        await waitForLoaderToDisappear(page);
+        console.log('✅ Vehicle detail links found and page is ready.');
         return true;
     } catch (e) {
         console.log(`⚠️ No vehicle links found within ${timeout}ms timeout.`);
@@ -121,6 +110,7 @@ const waitForResults = async (page, timeout = 15000) => {
     }
 };
 
+// --- ZMODYFIKOWANA FUNKCJA ---
 const navigateToPageNumber = async (page, pageNumber) => {
     try {
         const pageButtonSelector = `button#PageNumber${pageNumber}`;
@@ -129,12 +119,12 @@ const navigateToPageNumber = async (page, pageNumber) => {
             console.log(`🔢 Clicking page number button: ${pageNumber}`);
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
-            if (!hrefBeforeClick) {
-                console.log('⚠️ Could not find a reference href to track navigation.');
-                return false;
-            }
+            
+            // *** ZMIANA: Czekamy na zniknięcie loadera PRZED klikiem ***
+            await waitForLoaderToDisappear(page);
             await pageButton.scrollIntoViewIfNeeded();
             await pageButton.click();
+
             console.log(`⏳ Waiting for content to update...`);
             await page.waitForFunction((expectedOldHref) => {
                 const currentFirstLink = document.querySelector('a[href^="/VehicleDetail/"]');
@@ -150,6 +140,7 @@ const navigateToPageNumber = async (page, pageNumber) => {
     }
 };
 
+// --- ZMODYFIKOWANA FUNKCJA ---
 const navigateToNextTenPages = async (page) => {
     try {
         const nextTenButton = page.locator('button.btn-next-10');
@@ -157,11 +148,11 @@ const navigateToNextTenPages = async (page) => {
             console.log('⏭️ Clicking "Next 10 Pages"...');
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
-            if (!hrefBeforeClick) {
-                console.log('⚠️ Could not find a reference href to track navigation.');
-                return false;
-            }
+
+            // *** ZMIANA: Czekamy na zniknięcie loadera PRZED klikiem ***
+            await waitForLoaderToDisappear(page);
             await nextTenButton.click();
+            
             console.log(`⏳ Waiting for content to update...`);
             await page.waitForFunction((expectedOldHref) => {
                 const currentFirstLink = document.querySelector('a[href^="/VehicleDetail/"]');
@@ -189,13 +180,16 @@ const crawler = new PlaywrightCrawler({
         try {
             await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
             await handleCookieConsent(page);
-            await waitForResults(page);
+            if (!await waitForResults(page)) {
+                // Jeśli po załadowaniu nie ma wyników, nie ma sensu kontynuować
+                console.log('Stopping processing for this URL as no results were found.');
+                return;
+            }
 
             let currentPage = 1;
             while (currentPage <= maxPages) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
 
-                // --- MODYFIKACJA: Używamy nowej funkcji i inaczej zapisujemy dane ---
                 const vehiclesData = await extractVehicleDataFromList(page);
                 console.log(`✅ Found ${vehiclesData.length} vehicles on page ${currentPage}`);
 
@@ -214,7 +208,6 @@ const crawler = new PlaywrightCrawler({
                     break;
                 }
                 
-                // --- ORYGINALNA, DZIAŁAJĄCA LOGIKA PAGINACJI ---
                 const nextPageNumber = currentPage + 1;
                 let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
 
@@ -246,8 +239,7 @@ console.log('🏃‍♂️ Starting crawler...');
 await crawler.run();
 
 stats.endTime = new Date();
-// Mały błąd w oryginalnym kodzie, powinno być stats.startTime, a nie startTime
-stats.duration = (stats.endTime - stats.startTime); 
+stats.duration = (stats.endTime - stats.startTime);
 console.log('\n' + '='.repeat(50));
 console.log('🎉 Crawling completed!');
 console.log('📊 Final Statistics:', {
