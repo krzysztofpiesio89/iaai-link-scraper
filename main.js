@@ -3,7 +3,7 @@ import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 // Initialize the Actor
 await Actor.init();
-console.log('🚀 IAAI Full Data from List Scraper - Starting...');
+console.log('🚀 IAAI Full Data from List Scraper (Proven Pagination Logic) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -19,20 +19,19 @@ const {
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
 const dataset = await Dataset.open();
 
-const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
+// POPRAWKA: Przeniesienie `startTime` tutaj, aby była globalnie dostępna
+const startTime = new Date();
+const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime };
 
-// --- ZAKTUALIZOWANA FUNKCJA DO EKSTRAKCJI PEŁNYCH DANYCH Z LISTY ---
+// --- NOWA FUNKCJA DO EKSTRAKCJI PEŁNYCH DANYCH Z LISTY ---
 const extractVehicleDataFromList = async (page) => {
-    // Ta funkcja jest wykonywana w przeglądarce. Musi być samowystarczalna.
     return page.evaluate(() => {
         const results = [];
-        // Każdy pojazd na liście znajduje się w kontenerze z tymi klasami
         document.querySelectorAll('div.table-row.table-row-border').forEach(row => {
             try {
-                // Funkcja pomocnicza do pobierania tekstu z atrybutu title
+                // Funkcja pomocnicza do pobierania tekstu z atrybutu title, jest bardziej niezawodna
                 const getValueByTitle = (label) => {
                     const element = row.querySelector(`[title^="${label}"]`);
-                    // Zwraca tekst widoczny dla użytkownika, jest bardziej niezawodny
                     return element ? element.textContent.trim() : null;
                 };
 
@@ -44,9 +43,9 @@ const extractVehicleDataFromList = async (page) => {
                 const yearMatch = title.match(/^\d{4}/);
                 const year = yearMatch ? yearMatch[0] : null;
                 const make = year ? title.substring(5).split(' ')[0] : null;
-                const model = make ? title.substring(5 + make.length).trim() : title;
+                const model = make ? title.substring(5 + (make?.length || 0)).trim() : title;
 
-                const buyNowLink = row.querySelector('a:has-text("Buy Now")');
+                const buyNowLink = Array.from(row.querySelectorAll('a')).find(a => a.textContent.includes('Buy Now'));
                 const preBidButton = row.querySelector('.btn--pre-bid');
 
                 const vehicleData = {
@@ -71,8 +70,8 @@ const extractVehicleDataFromList = async (page) => {
                     aisleStall: getValueByTitle('Aisle/Stall:'),
                     market: getValueByTitle('Market:'),
                     acv: getValueByTitle('ACV:'),
-                    auctionDate: row.querySelector('.data-list__value--action')?.textContent.trim().split('\n')[0] || null,
-                    biddingStatus: buyNowLink ? buyNowLink.textContent.trim() : (preBidButton ? preBidButton.textContent.trim() : null),
+                    auctionDate: row.querySelector('.data-list__value--action')?.textContent.trim().split('\n')[0].trim() || null,
+                    biddingStatus: buyNowLink ? buyNowLink.textContent.trim() : (preBidButton ? preBidButton.textContent.trim() : 'N/A'),
                 };
                 results.push(vehicleData);
             } catch (e) {
@@ -82,6 +81,7 @@ const extractVehicleDataFromList = async (page) => {
         return results;
     });
 };
+
 
 // ## ORYGINALNE FUNKCJE POMOCNICZE (BEZ ZMIAN) ##
 const checkForCaptcha = async (page) => {
@@ -188,6 +188,7 @@ const navigateToNextTenPages = async (page) => {
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
     maxConcurrency,
+    maxRequestsPerCrawl,
     requestHandlerTimeoutSecs: 300,
     navigationTimeoutSecs: 120,
     launchContext: {
@@ -197,7 +198,6 @@ const crawler = new PlaywrightCrawler({
         },
         useChrome: true,
     },
-
     async requestHandler({ page, request }) {
         console.log(`📖 Processing: ${request.url}`);
         try {
@@ -205,6 +205,7 @@ const crawler = new PlaywrightCrawler({
             await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
             
             if (await checkForCaptcha(page)) {
+                stats.errors++;
                 throw new Error('CAPTCHA detected, cannot proceed.');
             }
 
