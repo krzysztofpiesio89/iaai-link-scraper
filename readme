@@ -1,0 +1,91 @@
+🚀 IAAI Auction Link Scraper
+The IAAI Auction Link Scraper is an automated tool (Apify Actor) designed to efficiently scrape vehicle auction links from iaai.com. It is optimized to handle the dynamic pagination of modern Single Page Applications (SPAs), ensuring reliable and complete data extraction.
+
+📋 Key Features
+Smart Pagination: The Actor automatically navigates through result pages. It can click individual page numbers (1, 2, 3...) and seamlessly switches to using the "Next 10 Pages" button when the individual numbers are no longer visible.
+
+SPA Optimized: It uses an advanced strategy of waiting for dynamic content changes rather than traditional page reloads, making it highly effective on modern websites like iaai.com.
+
+Cookie Consent Handling: Automatically detects and accepts cookie consent banners to prevent them from blocking content access.
+
+CAPTCHA Detection: Includes a built-in mechanism to detect CAPTCHA challenges. If a CAPTCHA is found, the Actor will stop to avoid being blocked.
+
+Fully Configurable: Allows for easy customization of input parameters, such as the start URL, the maximum number of pages to scrape, and proxy settings.
+
+Headless & Headed Mode: Can run in the background without a visible browser window (for performance) or with a visible window (for easy debugging).
+
+Detailed Logging & Statistics: Provides real-time progress updates in the log and presents a clear summary with key statistics upon completion.
+
+⚙️ How It Works (Technical Details)
+The Actor is built on the Crawlee library and uses Playwright to control a web browser, allowing for complex website interactions.
+
+Initialization: The Actor starts, loads its input configuration (e.g., startUrls, maxPages), and prepares the environment.
+
+Navigation: It navigates to the provided search results URL.
+
+Page Preparation:
+
+It accepts any cookie consent banners that may appear (handleCookieConsent).
+
+It waits for the initial auction results to load on the page (waitForResults).
+
+Main Pagination Loop: The Actor begins iterating through the result pages:
+a. Data Extraction: It scrapes all unique auction links from the currently visible page (extractAuctionLinks).
+b. Data Saving: It saves the found links, along with the page number where they were found, to the Apify Dataset.
+c. Navigating to the Next Page:
+* First, it tries to click the button for the next specific page number, e.g., button#PageNumber5 (MapsToPageNumber).
+* If the numeric button is not found (which happens after page 10), the Actor automatically attempts to click the "Next 10 Pages" button (MapsToNextTenPages).
+* If both navigation methods fail, the loop terminates, and the Actor finishes its run.
+d. Stop Condition: The loop stops when the maxPages limit is reached or when there are no more pages to process.
+
+Completion: After the loop finishes, the Actor displays the final statistics (pages processed, links found, duration) and exits.
+
+The Key SPA Navigation Strategy
+Navigating pages on iaai.com does not reload the entire website; it dynamically replaces the list of results. To reliably know when new data has loaded, the Actor employs a clever strategy:
+
+Before clicking a pagination button, it records the href attribute of the very first vehicle link on the list.
+
+It clicks the button.
+
+It then waits until the href attribute of the first link on the list changes. This is a robust and reliable signal that the new page's data has been rendered.
+
+📥 Input Configuration
+The Actor accepts the following input parameters:
+
+Parameter	Type	Description	Default Value
+startUrls	Array	A list of URLs where the scraper should begin. These should be search result pages on iaai.com.	[{ url: 'https://www.iaai.com/Search?queryFilterValue=Buy%20Now&...' }]
+maxPages	Number	The maximum number of result pages to process. The Actor will stop after reaching this limit.	50
+proxyConfiguration	Object	Proxy configuration for avoiding blocks. See the Apify Docs for details.	(none)
+headless	Boolean	If true, the browser runs in the background. Set to false to watch the Actor work in a live window.	true
+debugMode	Boolean	If true, the log will contain extra details, such as sample links found on each page.	false
+maxRequestsPerCrawl	Number	The maximum number of requests the crawler can make in a single run.	1000
+maxConcurrency	Number	The number of pages to process in parallel. It is highly recommended to keep this at 1 due to the sequential nature of the pagination logic.	1
+
+Eksportuj do Arkuszy
+📤 Output Format
+The Actor saves its results in the Apify Dataset. Each found link is a separate record in JSON format.
+
+Example of a single output record:
+
+JSON
+
+{
+  "type": "auction_link",
+  "url": "https://www.iaai.com/VehicleDetail/39735871~US",
+  "foundOnPage": 3
+}
+🏁 How to Run the Actor
+Copy the entire source code into a new Actor on the Apify platform.
+
+Navigate to the Input tab and customize the parameters for your needs (e.g., change startUrls to your desired search query).
+
+Click the Start button.
+
+You can monitor the progress in the Log tab.
+
+Once the run is finished, find your results in the Storage -> Dataset tab. You can download the data in formats like JSON, CSV, or Excel.
+
+⚠️ Limitations & Troubleshooting
+CAPTCHA: The Actor can detect but cannot solve CAPTCHA challenges. If a CAPTCHA appears, the run will fail. To minimize this risk, using high-quality proxies (e.g., Apify's residential proxies) is strongly recommended.
+
+Website Changes: This scraper depends on the current HTML structure of iaai.com. If the website's layout is updated, the CSS selectors in the code may no longer work and will need to be updated.

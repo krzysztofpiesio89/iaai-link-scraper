@@ -1,6 +1,65 @@
 {
-  "name": "iaai-vehicle-detail-scraper",
+  "actorSpecification": 1,
+  "name": "iaai-auction-crawler",
   "version": "1.0.0",
   "buildTag": "latest",
-  "dockerfile": "./Dockerfile"
+  "environmentVariables": {},
+  "dockerImage": "apify/actor-node-puppeteer-chrome",
+  "dockerfile": "./Dockerfile",
+  "readme": "./README.md",
+  "input": "./INPUT_SCHEMA.json",
+  "categories": ["ECOMMERCE", "SCRAPER"],
+  "defaultRunOptions": {
+    "build": "latest",
+    "timeoutSecs": 3600,
+    "memoryMbytes": 1024
+  },
+  "storages": {
+    "dataset": {
+      "actorSpecification": 1,
+      "title": "IAAI Auction Links",
+      "description": "Dataset containing discovered IAAI auction links with metadata",
+      "views": {
+        "overview": {
+          "title": "Overview",
+          "transformation": {
+            "fields": [
+              "type",
+              "url", 
+              "foundOn",
+              "timestamp",
+              "title"
+            ]
+          }
+        },
+        "auction-links": {
+          "title": "Auction Links Only",
+          "transformation": {
+            "fields": ["url", "foundOn", "timestamp", "title"],
+            "filter": {
+              "type": "auction_link"
+            }
+          }
+        },
+        "page-stats": {
+          "title": "Page Statistics",
+          "transformation": {
+            "fields": ["url", "linksFound", "pageNumber", "timestamp", "hasNextPage"],
+            "filter": {
+              "type": "page_stats"
+            }
+          }
+        },
+        "errors": {
+          "title": "Errors & Issues",
+          "transformation": {
+            "fields": ["type", "url", "error", "timestamp"],
+            "filter": {
+              "type": ["error", "failed_request", "captcha_detected"]
+            }
+          }
+        }
+      }
+    }
+  }
 }

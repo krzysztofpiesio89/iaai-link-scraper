@@ -1,16 +1,14 @@
-# Użyj oficjalnego obrazu Apify dla Node.js 18 z Playwright
-FROM apify/actor-node-playwright:18
+# Użyj poprawnego obrazu bazowego Apify z Node.js i przeglądarką dla Playwright
+FROM apify/actor-node-playwright-chrome:20
 
-# Skopiuj pliki package.json w celu instalacji zależności
-COPY package.json ./
+# Skopiuj pliki package.json
+COPY package*.json ./
 
-# Zainstaluj zależności zdefiniowane w package.json
-# --omit=dev pomija zależności deweloperskie, aby obraz był mniejszy
-RUN npm install --omit=dev
+# Zainstaluj zależności
+RUN npm ci --only=production
 
-# Skopiuj resztę plików źródłowych (w tym Twój główny kod scrapera)
-COPY . .
+# Skopiuj resztę kodu
+COPY . ./
 
-# Uruchom scrapera po starcie kontenera.
-# Domyślnie Apify wywołuje polecenie "npm start"
-CMD ["npm", "start"]
+# Uruchom scrapera
+CMD npm start

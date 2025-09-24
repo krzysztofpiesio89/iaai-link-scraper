@@ -1,31 +1,54 @@
-# Apify & Local Development
-# Ignoruje lokalne dane (datasety, kolejki) tworzone podczas uruchamiania aktora poleceniem 'apify run'
-/apify_storage
+# Dependencies
+node_modules/
+jspm_packages/
 
-# Node.js Dependencies
-# Ten folder jest automatycznie tworzony po uruchomieniu 'npm install' i nie powinien być częścią repozytorium
-/node_modules
+# Apify storage
+apify_storage/
+storage/
 
-# Logs
-# Ignoruje pliki logów generowane przez npm lub inne narzędzia
-logs
+# Build outputs
+dist/
+build/
+coverage/
+
+# Logs & Caches
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.npm/
+.eslintcache
+.yarn-integrity
 
 # Environment variables
-# Nigdy nie umieszczaj w repozytorium plików ze zmiennymi środowiskowymi (np. kluczami API)
 .env
 .env.local
-.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
 
-# IDE & Editor Directories
-# Ignoruje pliki konfiguracyjne popularnych edytorów kodu
-.idea/
+# Local development, testing & temporary files
+test-output/
+debug/
+screenshots/
+videos/
+*.tmp
+*.temp
+*.tgz
+
+# IDEs and editors
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# Operating System Files
-# Ignoruje pliki systemowe generowane przez macOS i Windows
+# OS generated files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db

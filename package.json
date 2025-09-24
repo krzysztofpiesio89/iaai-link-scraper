@@ -1,15 +1,18 @@
 {
-  "name": "iaai-vehicle-detail-scraper",
-  "version": "1.0.0",
-  "description": "Scrapes detailed vehicle information from IAAI auction pages.",
-  "type": "module",
-  "main": "main.js",
-  "scripts": {
-    "start": "node main.js"
-  },
-  "dependencies": {
-    "apify": "^3.1.0",
-    "crawlee": "^3.9.0",
-    "playwright": "^1.42.0"
-  }
+	"name": "iaai-auction-crawler",
+	"version": "1.1.0",
+	"type": "module",
+	"description": "Robust IAAI auction links crawler using Playwright for the Apify platform",
+	"main": "main.js",
+	"scripts": {
+		"start": "node main.js"
+	},
+	"dependencies": {
+		"apify": "^3.1.0",
+		"crawlee": "^3.5.0",
+		"playwright": "*"
+	},
+	"engines": {
+		"node": ">=18.0.0"
+	}
 }

@@ -1,8 +1,14 @@
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
-// DOBRA PRAKTYKA: Centralizacja selektorów.
+// DOBRA PRAKTYKA: Centralizacja selektorów
 const SELECTORS = {
+    // Selektory dla strony listy
+    vehicleLink: 'a[href^="/VehicleDetail/"]',
+    nextTenButton: 'button.btn-next-10',
+    getPageButton: (pageNumber) => `button#PageNumber${pageNumber}`,
+    
+    // Selektory dla strony szczegółów
     jsonData: 'script#ProductDetailsVM',
     unavailableMessage: '.message-panel__title:has-text("Vehicle Details Are Not Available")',
     captcha: 'iframe[src*="recaptcha"], .g-recaptcha, .h-captcha, #challenge-form, text=/verify you are human/i',
@@ -10,55 +16,68 @@ const SELECTORS = {
 
 await Actor.init();
 
-console.log('🚀 IAAI Vehicle Detail & Image Scraper (FINAL) - Starting...');
+console.log('🚀 IAAI All-In-One Scraper - Starting...');
 
 const {
-    startUrls = [],
+    startUrls = [{ url: 'https://www.iaai.com/Search?queryFilterValue=Buy%20Now&queryFilterGroup=AuctionType', userData: { label: 'LIST' } }],
+    maxPages = 5, // Ustaw niższy domyślny limit dla tego typu scrapera
     proxyConfiguration,
 } = await Actor.getInput() ?? {};
 
-// --- FUNKCJE POMOCNICZE ---
-const parseNumber = (str) => {
-    if (!str || typeof str !== 'string') return null;
-    const cleaned = str.replace(/[$,\smiUSD]/g, '');
-    const number = parseFloat(cleaned);
-    return isNaN(number) ? null : number;
-};
-
-const parseDate = (dateStr) => {
-    if (!dateStr) return null;
-    try {
-        return new Date(dateStr).toISOString();
-    } catch (e) {
-        console.warn(`Could not parse date: ${dateStr}`);
-        return null;
-    }
-};
-
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: await Actor.createProxyConfiguration(proxyConfiguration),
-    maxConcurrency: 10,
-    navigationTimeoutSecs: 120,
+    maxConcurrency: 10, // Możemy zwiększyć, bo zadania szczegółów są niezależne
 
-    async requestHandler({ page, request, log }) {
-        const state = await crawler.useState();
-        log.info(`🛠️ Processing: ${request.url}`);
+    async requestHandler({ page, request, log, crawler }) {
+        const { label, ...userData } = request.userData;
 
-        try {
-            await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        if (label === 'LIST') {
+            // --- LOGIKA DLA STRONY Z LISTĄ WYNIKÓW ---
+            log.info(`📄 Processing LIST page: ${request.url}`);
 
-            if (await page.locator(SELECTORS.captcha).count() > 0) {
-                throw new Error('CAPTCHA detected. Ensure you are using RESIDENTIAL proxies.');
-            }
-
-            await page.waitForSelector(`${SELECTORS.jsonData}, ${SELECTORS.unavailableMessage}`, {
-                state: 'attached',
-                timeout: 25000,
+            await page.waitForSelector(SELECTORS.vehicleLink, { timeout: 25000 }).catch(() => {
+                log.warning('No vehicle links found on the page, might be the end.');
             });
 
+            // Wyodrębnij linki i dane (w tym markę)
+            const vehicleEntries = await page.evaluate((selector) => {
+                const results = [];
+                document.querySelectorAll(selector).forEach(el => {
+                    const url = new URL(el.getAttribute('href'), location.origin).href;
+                    const title = el.textContent.trim(); // np. "2003 DODGE RAM 1500"
+                    const yearMatch = title.match(/^\d{4}/);
+                    const make = yearMatch ? title.substring(5).split(' ')[0] : null;
+
+                    results.push({
+                        url,
+                        userData: {
+                            label: 'DETAIL',
+                            make,
+                            year: yearMatch ? yearMatch[0] : null,
+                        },
+                    });
+                });
+                return results;
+            }, SELECTORS.vehicleLink);
+
+            log.info(`Found ${vehicleEntries.length} vehicle links on this page.`);
+            await crawler.addRequests(vehicleEntries);
+
+            // Paginacja
+            const currentPage = userData.pageNumber || 1;
+            if (currentPage < maxPages) {
+                // Logika paginacji (przejście na następną stronę listy)
+                // ... (można dodać logikę paginacji z poprzedniego scrapera, jeśli potrzebne)
+            }
+
+        } else if (label === 'DETAIL') {
+            // --- LOGIKA DLA STRONY ZE SZCZEGÓŁAMI POJAZDU ---
+            log.info(`🚗 Processing DETAIL page: ${request.url}`);
+
+            await page.waitForSelector(`${SELECTORS.jsonData}, ${SELECTORS.unavailableMessage}`, { state: 'attached', timeout: 25000 });
+            
             if (await page.locator(SELECTORS.unavailableMessage).count() > 0) {
-                log.warning(`Vehicle at ${request.url} is no longer available. Skipping.`);
-                state.vehiclesSkipped++;
+                log.warning(`Vehicle at ${request.url} is unavailable. Skipping.`);
                 return;
             }
 
@@ -67,91 +86,57 @@ const crawler = new PlaywrightCrawler({
                 return scriptTag ? JSON.parse(scriptTag.textContent) : null;
             }, SELECTORS.jsonData);
 
-            if (!jsonData) {
-                throw new Error('Could not find or parse ProductDetailsVM JSON data.');
-            }
+            if (!jsonData) throw new Error('Could not find ProductDetailsVM JSON data.');
 
             const attributes = jsonData.inventoryView?.attributes || {};
-            const auctionInfo = jsonData.auctionInformation || {};
+            const saleInfo = jsonData.inventoryView?.saleInformation?.$values || [];
             
-            // --- NOWOŚĆ: POBIERANIE LINKÓW DO ZDJĘĆ ---
-            const imageUrls = [];
-            const imageKeys = jsonData.inventoryView?.imageDimensions?.keys || [];
-            for (const image of imageKeys) {
-                if (image.k) {
-                    const imageUrl = `https://vis.iaai.com/resizer?imageKeys=${image.k}`;
-                    imageUrls.push({ url: imageUrl }); // Formatujemy od razu dla Prisma
-                }
-            }
+            const findSaleInfo = (key) => saleInfo.find(item => item.key === key)?.value || null;
 
-            const vehicleData = {
-                vehicleTitle: attributes.YearMakeModelSeries?.trim(),
-                vin: attributes.VIN,
-                stockNumber: attributes.StockNumber,
-                mileage: parseNumber(attributes.ODOValue),
-                primaryDamage: attributes.PrimaryDamageDesc,
-                secondaryDamage: attributes.SecondaryDamageDesc,
-                estimatedRetailValue: parseNumber(jsonData.inventory?.providerACV),
-                bodyStyle: attributes.BodyStyleName,
-                engine: attributes.EngineSize || attributes.EngineInformation,
-                transmission: attributes.Transmission,
-                fuelType: attributes.FuelTypeDesc,
-                cylinders: attributes.CylindersDesc,
-                hasKeys: attributes.Keys?.toLowerCase() === 'true',
-                driveLineType: attributes.DriveLineTypeDesc,
-                saleDocument: `${attributes.Title} (${attributes.TitleStateName})`,
-                auctionLocation: attributes.BranchName,
-                saleDate: parseDate(auctionInfo.prebidInformation?.liveDate),
-                auctionItemNumber: attributes.Slot,
-                currentBid: parseNumber(auctionInfo.biddingInformation?.highBidAmount),
-                buyNowPrice: parseNumber(auctionInfo.biddingInformation?.buyNowPrice),
-                sourceUrl: request.url,
-                images: imageUrls, // Dodajemy tablicę ze zdjęciami
+            const vehicleInfo = {
+                "Make": userData.make || attributes.Make,
+                "Model": attributes.Model,
+                "Year": userData.year || attributes.Year,
+                "Stock #": attributes.StockNumber,
+                "VIN (Status)": attributes.VINMask,
+                "Odometer": attributes.ODOValue ? `${attributes.ODOValue} ${attributes.ODOUoM} (${attributes.ODOBrand})` : null,
+                "Start Code": attributes.StartsDesc,
+                "Key": attributes.Keys === 'True' ? 'Present' : 'Not Present',
+                "Primary Damage": attributes.PrimaryDamageDesc,
+                "Secondary Damage": attributes.SecondaryDamageDesc,
+                "Body Style": attributes.BodyStyleName,
+                "Engine": attributes.EngineSize || attributes.EngineInformation,
+                "Transmission": attributes.Transmission,
+                "Drive Line Type": attributes.DriveLineTypeDesc,
+                "Fuel Type": attributes.FuelTypeDesc,
+                "Cylinders": attributes.CylindersDesc,
+                "Restraint System": attributes.RestraintType,
+                "Exterior/Interior": `${attributes.ExteriorColor} / ${attributes.InteriorColor}`,
+                "Manufactured In": attributes.CountryOfOrigin,
+                "Title/Sale Doc": findSaleInfo("TitleSaleDoc"),
+                "Actual Cash Value": findSaleInfo("ActualCashValue"),
+                "Selling Branch": attributes.BranchName,
+                "Auction Date and Time": findSaleInfo("AuctionDateTime"),
+                "Lane/Run #": findSaleInfo("Lane"),
             };
 
-            await Dataset.pushData(vehicleData);
-            log.info(`✅ Successfully extracted data for VIN: ${vehicleData.vin || attributes.StockNumber}`);
-            state.vehiclesProcessed++;
+            const images = (jsonData.inventoryView?.imageDimensions?.keys || []).map(img => ({
+                hdUrl: `https://vis.iaai.com/resizer?imageKeys=${img.k}`,
+                thumbUrl: `https://vis.iaai.com/resizer?imageKeys=${img.k}&width=161&height=120`,
+            }));
 
-        } catch (error) {
-            state.vehiclesFailed++;
-            log.error(`❌ Failed to process ${request.url}: ${error.message}`);
-            
-            const safeKey = request.url.replace(/[^a-zA-Z0-9-_.]/g, '_');
-            const screenshotBuffer = await page.screenshot({ fullPage: true });
-            await Actor.setValue(`ERROR-${safeKey}.png`, screenshotBuffer, { contentType: 'image/png' });
+            await Dataset.pushData({ vehicleInfo, images });
+            log.info(`✅ Successfully scraped details for Stock #: ${vehicleInfo["Stock #"]}`);
         }
     },
-    
-    failedRequestHandler: async ({ request, log }) => {
-        const state = await crawler.useState();
-        state.vehiclesFailed++;
-        log.error(`💀 Request completely failed: ${request.url}`);
-    }
+
+    async failedRequestHandler({ request, log }) {
+        log.error(`💀 Request failed: ${request.url}`);
+    },
 });
 
-const startTime = new Date();
-await crawler.useState({ vehiclesProcessed: 0, vehiclesFailed: 0, vehiclesSkipped: 0 });
-
-console.log('🏃‍♂️ Starting detail scraper...');
+console.log('🏃‍♂️ Starting all-in-one scraper...');
 await crawler.run(startUrls);
-console.log('✅ Detail scraper finished.');
-
-const endTime = new Date();
-const durationInSeconds = Math.round((endTime - startTime) / 1000);
-
-const finalState = await crawler.useState();
-const finalStats = {
-    ...finalState,
-    totalRequests: startUrls.length,
-    duration: `${durationInSeconds}s`,
-};
-
-console.log('\n' + '='.repeat(50));
-console.log('🎉 Scraping completed!');
-console.log('📊 Final Statistics:', finalStats);
-console.log('='.repeat(50));
-
-await Actor.setValue('OUTPUT', finalStats);
+console.log('✅ Scraper finished.');
 
 await Actor.exit();
