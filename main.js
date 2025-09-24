@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Advanced Data Scraper (with Modal Image Extraction) - Starting...');
+console.log('🚀 IAAI Advanced Data Scraper (v2 - Robust Modal Handling) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -188,11 +188,11 @@ const navigateToNextTenPages = async (page) => {
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
     maxConcurrency,
-    requestHandlerTimeoutSecs: 600, // Zwiększony timeout na obsługę strony
+    requestHandlerTimeoutSecs: 600,
     navigationTimeoutSecs: 120,
     launchContext: { launchOptions: { headless, args: ['--no-sandbox'] } },
 
-    // --- NOWY, ROZBUDOWANY REQUEST HANDLER ---
+    // --- ZAKTUALIZOWANY I POPRAWIONY REQUEST HANDLER ---
     async requestHandler({ page, request }) {
         console.log(`📖 Processing: ${request.url}`);
         try {
@@ -207,7 +207,6 @@ const crawler = new PlaywrightCrawler({
             while (currentPage <= maxPages) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
 
-                // Krok 1: Pobierz wszystkie statyczne dane z widoku listy
                 const staticVehiclesData = await extractVehicleDataFromList(page);
                 
                 if (staticVehiclesData.length === 0) {
@@ -215,13 +214,11 @@ const crawler = new PlaywrightCrawler({
                     break;
                 }
 
-                // Krok 2: Pobierz lokatory do wierszy, aby móc na nich wykonywać akcje
                 const vehicleRows = await page.locator('div.table-row.table-row-border').all();
                 
                 const itemsToProcessCount = Math.min(staticVehiclesData.length, vehicleRows.length);
                 console.log(`🔎 Found ${itemsToProcessCount} vehicles to process on this page.`);
 
-                // Krok 3: Przetwórz każdy pojazd, aby pobrać dodatkowe zdjęcia
                 const pageResults = [];
                 for (let i = 0; i < itemsToProcessCount; i++) {
                     const vehicleData = staticVehiclesData[i];
@@ -229,13 +226,15 @@ const crawler = new PlaywrightCrawler({
                     console.log(`  -> Processing vehicle ${i + 1}/${itemsToProcessCount}: ${vehicleData.title}`);
 
                     try {
-                        const viewImagesButton = row.locator('button.btn-allimages');
+                        // ZMIANA: Wyszukiwanie przycisku po tekście
+                        const viewImagesButton = row.getByText('View All Images');
                         if (await viewImagesButton.count() > 0) {
                             console.log('     - Clicking "View All Images" button...');
                             await viewImagesButton.scrollIntoViewIfNeeded();
                             await viewImagesButton.click();
 
-                            await page.waitForSelector('#image_360Modal.show', { state: 'visible', timeout: 15000 });
+                            // ZMIANA: Poprawione oczekiwanie na modal (klasa .in lub .show)
+                            await page.waitForSelector('#image_360Modal.in, #image_360Modal.show', { state: 'visible', timeout: 15000 });
                             console.log('     - Modal opened.');
                             
                             await page.waitForSelector('#hdnDimensions', { state: 'attached', timeout: 10000 });
@@ -243,7 +242,6 @@ const crawler = new PlaywrightCrawler({
                             const jsonText = await page.locator('#hdnDimensions').textContent();
                             const imageData = JSON.parse(jsonText);
                             
-                            // Tworzenie URLi do obrazów w wysokiej rozdzielczości
                             const allImageUrls = imageData.keys?.map(keyObj => `https://vis.iaai.com/resizer?imageKeys=${keyObj.K}&width=1920`) || [];
                             const videoUrls = imageData.Videos?.map(video => video.URL) || [];
                             
@@ -253,8 +251,9 @@ const crawler = new PlaywrightCrawler({
                             
                             console.log('     - Closing modal...');
                             await page.locator('#image_360Modal button[data-dismiss="modal"]').first().click();
-                            await page.waitForSelector('#image_360Modal.show', { state: 'hidden', timeout: 10000 });
-                            await page.waitForTimeout(250); // Krótka pauza na ustabilizowanie UI
+                             // ZMIANA: Poprawione oczekiwanie na zniknięcie modala
+                            await page.waitForSelector('#image_360Modal.in, #image_360Modal.show', { state: 'hidden', timeout: 10000 });
+                            await page.waitForTimeout(250);
                         } else {
                             console.log('     - "View All Images" button not found.');
                             vehicleData.allImageUrls = [];
@@ -264,11 +263,19 @@ const crawler = new PlaywrightCrawler({
                         console.warn(`     - ❌ Error processing image modal for ${vehicleData.title}: ${e.message}`);
                         vehicleData.allImageUrls = vehicleData.allImageUrls || [];
                         vehicleData.videoUrls = vehicleData.videoUrls || [];
-                        // Próba odzyskania, jeśli modal utknął
-                        if (await page.locator('#image_360Modal.show').isVisible({ timeout: 1000 })) {
-                            console.log('     - Modal seems stuck. Reloading page to recover.');
-                            await page.reload({ waitUntil: 'domcontentloaded' });
-                            break; // Przerwij pętlę dla tej strony po przeładowaniu
+                        
+                        // ZMIANA: Ulepszona logika odzyskiwania, gdy modal utknie
+                        if (await page.locator('#image_360Modal.in, #image_360Modal.show').isVisible({ timeout: 1000 })) {
+                           console.log('     - Modal seems stuck. Attempting to force close it...');
+                           try {
+                               await page.locator('#image_360Modal button[data-dismiss="modal"]').first().click({ timeout: 5000 });
+                               await page.waitForSelector('#image_360Modal.in, #image_360Modal.show', { state: 'hidden', timeout: 10000 });
+                               console.log('     - Successfully force-closed the modal.');
+                           } catch (closeError) {
+                               console.warn(`     - Could not force-close the modal: ${closeError.message}. Reloading page as a last resort.`);
+                               await page.reload({ waitUntil: 'domcontentloaded' });
+                               break; // Przerwij pętlę dla tej strony, bo stan został zresetowany
+                           }
                         }
                     }
                     pageResults.push(vehicleData);
@@ -287,7 +294,6 @@ const crawler = new PlaywrightCrawler({
                     break;
                 }
                 
-                // Logika paginacji (bez zmian)
                 const nextPageNumber = currentPage + 1;
                 let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
 
