@@ -1,20 +1,25 @@
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
+// Initialize the Actor
 await Actor.init();
-console.log('🚀 IAAI Full Data from List Scraper (Stealth & Proven Pagination Logic) - Starting...');
+console.log('🚀 IAAI Full Data from List Scraper (Proven Pagination Logic) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
     startUrls = [{ url: 'https://www.iaai.com/Search?queryFilterValue=Buy%20Now&queryFilterGroup=AuctionType' }],
-    maxPages = 50,
+    maxRequestsPerCrawl = 1000,
+    maxConcurrency = 1,
     proxyConfiguration,
     headless = true,
+    debugMode = false,
+    maxPages = 50
 } = input;
 
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
 const dataset = await Dataset.open();
 
+// POPRAWKA: Przeniesienie `startTime` tutaj, aby była globalnie dostępna
 const startTime = new Date();
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime };
 
@@ -24,6 +29,7 @@ const extractVehicleDataFromList = async (page) => {
         const results = [];
         document.querySelectorAll('div.table-row.table-row-border').forEach(row => {
             try {
+                // Funkcja pomocnicza do pobierania tekstu z atrybutu title, jest bardziej niezawodna
                 const getValueByTitle = (label) => {
                     const element = row.querySelector(`[title^="${label}"]`);
                     return element ? element.textContent.trim() : null;
@@ -78,21 +84,48 @@ const extractVehicleDataFromList = async (page) => {
 
 // ## ORYGINALNE FUNKCJE POMOCNICZE (BEZ ZMIAN) ##
 const checkForCaptcha = async (page) => {
-    const captchaSelectors = ['iframe[src*="recaptcha"]', '.g-recaptcha', '.h-captcha', '.cf-challenge-form', '#challenge-form', 'h1:has-text("Verifying you are human")'];
+    const captchaSelectors = ['iframe[src*="recaptcha"]', '.g-recaptcha', '.h-captcha', '.cf-challenge-form', '#challenge-form'];
     for (const sel of captchaSelectors) {
-        if (await page.locator(sel).count() > 0) return true;
+        if (await page.isVisible(sel, { timeout: 2000 })) return true;
     }
-    return false;
+    const title = (await page.title()).toLowerCase();
+    const pageText = (await page.evaluate(() => document.body?.innerText?.toLowerCase() || ''));
+    return ['verify you are human', 'robot', 'captcha', 'challenge'].some(k => title.includes(k) || pageText.includes(k));
 };
 
 const handleCookieConsent = async (page) => {
     try {
-        const cookieButton = page.locator('#truste-consent-button, button[class*="cookie"]').first();
-        if (await cookieButton.isVisible({ timeout: 3000 })) {
-            console.log('🍪 Accepting cookie consent...');
-            await cookieButton.click();
+        const cookieSelectors = [
+            '#truste-consent-button',
+            'button[class*="cookie"]',
+            'button[class*="consent"]',
+            '.cookie-banner button',
+            '[id*="accept-cookies"]'
+        ];
+        for (const selector of cookieSelectors) {
+            const button = page.locator(selector).first();
+            if (await button.isVisible({ timeout: 2000 })) {
+                console.log('🍪 Accepting cookie consent...');
+                await button.click();
+                return true;
+            }
         }
-    } catch (error) { /* Ignore */ }
+    } catch (error) {
+        // Ignore errors
+    }
+    return false;
+};
+
+const waitForResults = async (page, timeout = 15000) => {
+    console.log('⏳ Waiting for search results to load...');
+    try {
+        await page.waitForSelector('a[href^="/VehicleDetail/"]', { timeout });
+        console.log('✅ Vehicle detail links found');
+        return true;
+    } catch (e) {
+        console.log(`⚠️ No vehicle links found within ${timeout}ms timeout.`);
+        return false;
+    }
 };
 
 const navigateToPageNumber = async (page, pageNumber) => {
@@ -103,9 +136,13 @@ const navigateToPageNumber = async (page, pageNumber) => {
             console.log(`🔢 Clicking page number button: ${pageNumber}`);
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
-            if (!hrefBeforeClick) return false;
+            if (!hrefBeforeClick) {
+                console.log('⚠️ Could not find a reference href to track navigation.');
+                return false;
+            }
             await pageButton.scrollIntoViewIfNeeded();
             await pageButton.click();
+            console.log(`⏳ Waiting for content to update...`);
             await page.waitForFunction((expectedOldHref) => {
                 const currentFirstLink = document.querySelector('a[href^="/VehicleDetail/"]');
                 return currentFirstLink && currentFirstLink.getAttribute('href') !== expectedOldHref;
@@ -127,8 +164,12 @@ const navigateToNextTenPages = async (page) => {
             console.log('⏭️ Clicking "Next 10 Pages"...');
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
-            if (!hrefBeforeClick) return false;
+            if (!hrefBeforeClick) {
+                console.log('⚠️ Could not find a reference href to track navigation.');
+                return false;
+            }
             await nextTenButton.click();
+            console.log(`⏳ Waiting for content to update...`);
             await page.waitForFunction((expectedOldHref) => {
                 const currentFirstLink = document.querySelector('a[href^="/VehicleDetail/"]');
                 return currentFirstLink && currentFirstLink.getAttribute('href') !== expectedOldHref;
@@ -145,33 +186,30 @@ const navigateToNextTenPages = async (page) => {
 
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
-    maxConcurrency, // Używamy zmiennej z input
-    navigationTimeoutSecs: 120,
+    maxConcurrency,
+    maxRequestsPerCrawl,
     requestHandlerTimeoutSecs: 300,
+    navigationTimeoutSecs: 120,
     launchContext: {
-        launchOptions: { headless, args: ['--no-sandbox'] }
-    },
-    preNavigationHooks: [
-        async ({ page }) => {
-            await page.setExtraHTTPHeaders({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9',
-            });
-            await page.setViewportSize({ width: 1920, height: 1080 });
+        launchOptions: {
+            headless,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage']
         },
-    ],
+        useChrome: true,
+    },
     async requestHandler({ page, request }) {
         console.log(`📖 Processing: ${request.url}`);
         try {
-            await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+            await page.setViewportSize({ width: 1920, height: 1080 });
+            await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
             
             if (await checkForCaptcha(page)) {
                 stats.errors++;
-                throw new Error('CAPTCHA detected. Use RESIDENTIAL proxies.');
+                throw new Error('CAPTCHA detected, cannot proceed.');
             }
 
             await handleCookieConsent(page);
-            await page.waitForSelector('div.table-row-border', { timeout: 30000 });
+            await waitForResults(page);
 
             let currentPage = 1;
             while (currentPage <= maxPages) {
@@ -211,18 +249,13 @@ const crawler = new PlaywrightCrawler({
                 }
             }
         } catch (error) {
+            console.log(`❌ Main error processing ${request.url}:`, error.message);
             stats.errors++;
-            console.error(`❌ Main error on ${request.url}: ${error.message}`);
-            // Rzucamy błąd dalej, aby `failedRequestHandler` mógł go obsłużyć
-            throw error;
         }
     },
-    failedRequestHandler: async ({ request, page }) => {
+    failedRequestHandler: async ({ request }) => {
+        console.log(`❌ Request completely failed: ${request.url}`);
         stats.errors++;
-        console.error(`💀 Request failed: ${request.url}. Saving debug info.`);
-        const safeKey = request.url.replace(/[^a-zA-Z0-9-_.]/g, '_');
-        const screenshotBuffer = await page.screenshot({ fullPage: true });
-        await Actor.setValue(`ERROR-${safeKey}.png`, screenshotBuffer, { contentType: 'image/png' });
     }
 });
 
@@ -242,5 +275,4 @@ console.log('📊 Final Statistics:', {
 });
 console.log('='.repeat(50));
 
-await Actor.setValue('OUTPUT', stats);
 await Actor.exit();
