@@ -1,9 +1,8 @@
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
-// Initialize the Actor
 await Actor.init();
-console.log('🚀 IAAI Basic Data Scraper - Starting...');
+console.log('🚀 IAAI Basic Data Scraper (Proven Pagination Logic) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -21,35 +20,27 @@ const dataset = await Dataset.open();
 
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
 
-// --- NOWA FUNKCJA DO WYODRĘBNIANIA PEŁNYCH DANYCH Z LISTY ---
+// --- NOWA FUNKCJA DO EKSTRAKCJI DANYCH, ZASTĘPUJE STARĄ extractAuctionLinks ---
 const extractVehicleDataFromList = async (page) => {
-    // Ta funkcja jest wykonywana w przeglądarce. Musi być samowystarczalna.
     return page.evaluate(() => {
         const results = [];
-        // Każdy pojazd na liście znajduje się w kontenerze z tymi klasami
-        const vehicleRows = document.querySelectorAll('div.table-row.table-row-border');
-
-        vehicleRows.forEach(row => {
+        // Każdy pojazd jest w kontenerze 'div.table-row.table-row-border'
+        document.querySelectorAll('div.table-row.table-row-border').forEach(row => {
             try {
+                // Używamy bardziej precyzyjnych selektorów wewnątrz każdego wiersza
                 const linkElement = row.querySelector('h4.heading-7 a');
                 const imageElement = row.querySelector('.table-cell--image img');
                 
-                if (!linkElement || !imageElement) {
-                    return; // Pomiń ten wiersz, jeśli nie ma linku lub obrazka
-                }
+                if (!linkElement || !imageElement) return;
 
-                // 1. Link do szczegółów
                 const detailUrl = new URL(linkElement.getAttribute('href'), location.origin).href;
-
-                // 2. Rok, Marka, Model
-                const title = linkElement.textContent.trim(); // np. "2014 FORD F-150 XL"
+                const imageUrl = imageElement.getAttribute('data-src') || imageElement.getAttribute('src');
+                const title = linkElement.textContent.trim();
+                
                 const yearMatch = title.match(/^\d{4}/);
                 const year = yearMatch ? yearMatch[0] : null;
                 const make = year ? title.substring(5).split(' ')[0] : null;
                 const model = make ? title.substring(5 + make.length).trim() : title;
-
-                // 3. Link do zdjęcia
-                const imageUrl = imageElement.getAttribute('data-src') || imageElement.getAttribute('src');
 
                 results.push({
                     detailUrl,
@@ -59,7 +50,6 @@ const extractVehicleDataFromList = async (page) => {
                     imageUrl,
                 });
             } catch (e) {
-                // Ignoruj błędy dla pojedynczych wierszy, aby nie zatrzymać całego scrapingu
                 console.warn('Could not process a vehicle row:', e.message);
             }
         });
@@ -69,60 +59,118 @@ const extractVehicleDataFromList = async (page) => {
 
 
 // ## ORYGINALNE FUNKCJE POMOCNICZE (BEZ ZMIAN) ##
-
 const checkForCaptcha = async (page) => {
-    // ... bez zmian
+    const captchaSelectors = ['iframe[src*="recaptcha"]', '.g-recaptcha', '.h-captcha', '.cf-challenge-form', '#challenge-form'];
+    for (const sel of captchaSelectors) {
+        if (await page.isVisible(sel, { timeout: 2000 })) return true;
+    }
+    const title = (await page.title()).toLowerCase();
+    const pageText = (await page.evaluate(() => document.body?.innerText?.toLowerCase() || ''));
+    return ['verify you are human', 'robot', 'captcha', 'challenge'].some(k => title.includes(k) || pageText.includes(k));
 };
+
 const handleCookieConsent = async (page) => {
-    // ... bez zmian
+    try {
+        const cookieSelectors = [
+            '#truste-consent-button',
+            'button[class*="cookie"]',
+            'button[class*="consent"]',
+            '.cookie-banner button',
+            '[id*="accept-cookies"]'
+        ];
+        for (const selector of cookieSelectors) {
+            const button = page.locator(selector).first();
+            if (await button.isVisible({ timeout: 2000 })) {
+                console.log('🍪 Accepting cookie consent...');
+                await button.click();
+                return true;
+            }
+        }
+    } catch (error) {
+        // Ignore errors
+    }
+    return false;
 };
+
 const waitForResults = async (page, timeout = 15000) => {
-    // ... bez zmian
+    console.log('⏳ Waiting for search results to load...');
+    try {
+        await page.waitForSelector('a[href^="/VehicleDetail/"]', { timeout });
+        console.log('✅ Vehicle detail links found');
+        return true;
+    } catch (e) {
+        console.log(`⚠️ No vehicle links found within ${timeout}ms timeout.`);
+        return false;
+    }
 };
+
 const navigateToPageNumber = async (page, pageNumber) => {
-    // ... bez zmian
+    try {
+        const pageButtonSelector = `button#PageNumber${pageNumber}`;
+        const pageButton = page.locator(pageButtonSelector);
+        if (await pageButton.count() > 0) {
+            console.log(`🔢 Clicking page number button: ${pageNumber}`);
+            const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
+            const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
+            if (!hrefBeforeClick) {
+                console.log('⚠️ Could not find a reference href to track navigation.');
+                return false;
+            }
+            await pageButton.scrollIntoViewIfNeeded();
+            await pageButton.click();
+            console.log(`⏳ Waiting for content to update...`);
+            await page.waitForFunction((expectedOldHref) => {
+                const currentFirstLink = document.querySelector('a[href^="/VehicleDetail/"]');
+                return currentFirstLink && currentFirstLink.getAttribute('href') !== expectedOldHref;
+            }, hrefBeforeClick, { timeout: 20000 });
+            console.log(`✅ Successfully navigated to page ${pageNumber}`);
+            return true;
+        }
+        return false;
+    } catch (error) {
+        console.log(`❌ Failed to click page ${pageNumber}: ${error.message}`);
+        return false;
+    }
 };
+
 const navigateToNextTenPages = async (page) => {
-    // ... bez zmian
+    try {
+        const nextTenButton = page.locator('button.btn-next-10');
+        if (await nextTenButton.count() > 0 && await nextTenButton.isEnabled()) {
+            console.log('⏭️ Clicking "Next 10 Pages"...');
+            const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
+            const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
+            if (!hrefBeforeClick) {
+                console.log('⚠️ Could not find a reference href to track navigation.');
+                return false;
+            }
+            await nextTenButton.click();
+            console.log(`⏳ Waiting for content to update...`);
+            await page.waitForFunction((expectedOldHref) => {
+                const currentFirstLink = document.querySelector('a[href^="/VehicleDetail/"]');
+                return currentFirstLink && currentFirstLink.getAttribute('href') !== expectedOldHref;
+            }, hrefBeforeClick, { timeout: 20000 });
+            console.log('✅ Successfully navigated to the next set of pages.');
+            return true;
+        }
+        return false;
+    } catch (error) {
+        console.log(`❌ Failed to click "Next 10 Pages": ${error.message}`);
+        return false;
+    }
 };
 
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
     maxConcurrency,
-    maxRequestsPerCrawl,
     requestHandlerTimeoutSecs: 300,
     navigationTimeoutSecs: 120,
-    launchContext: {
-        launchOptions: {
-            headless,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage'
-            ]
-        },
-        useChrome: true,
-    },
+    launchContext: { launchOptions: { headless, args: ['--no-sandbox'] } },
+
     async requestHandler({ page, request }) {
-        const url = request.url;
-        console.log(`📖 Processing: ${url}`);
-
+        console.log(`📖 Processing: ${request.url}`);
         try {
-            await page.setViewportSize({ width: 1920, height: 1080 });
-            await page.setExtraHTTPHeaders({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            });
-
-            console.log('🌐 Navigating to the page...');
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-            if (await checkForCaptcha(page)) {
-                console.log('🤖 CAPTCHA detected - aborting run.');
-                stats.errors++;
-                throw new Error('CAPTCHA detected, cannot proceed.');
-            }
-
+            await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
             await handleCookieConsent(page);
             await waitForResults(page);
 
@@ -130,16 +178,13 @@ const crawler = new PlaywrightCrawler({
             while (currentPage <= maxPages) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
 
-                // --- ZASTOSOWANIE NOWEJ FUNKCJI ---
+                // --- MODYFIKACJA: Używamy nowej funkcji i inaczej zapisujemy dane ---
                 const vehiclesData = await extractVehicleDataFromList(page);
                 console.log(`✅ Found ${vehiclesData.length} vehicles on page ${currentPage}`);
 
                 if (vehiclesData.length > 0) {
                     stats.vehiclesFound += vehiclesData.length;
-                    
-                    // Zapisujemy nowe, bogatsze dane
                     await dataset.pushData(vehiclesData);
-
                 } else {
                    console.log('⚠️ No vehicles found on this page, stopping pagination.');
                    break;
@@ -151,7 +196,8 @@ const crawler = new PlaywrightCrawler({
                     console.log(`🏁 Reached maxPages limit of ${maxPages}. Stopping.`);
                     break;
                 }
-
+                
+                // --- ORYGINALNA, DZIAŁAJĄCA LOGIKA PAGINACJI ---
                 const nextPageNumber = currentPage + 1;
                 let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
 
@@ -168,7 +214,7 @@ const crawler = new PlaywrightCrawler({
                 }
             }
         } catch (error) {
-            console.log(`❌ Main error processing ${url}:`, error.message);
+            console.log(`❌ Main error processing ${request.url}:`, error.message);
             stats.errors++;
         }
     },
@@ -183,10 +229,9 @@ console.log('🏃‍♂️ Starting crawler...');
 await crawler.run();
 
 stats.endTime = new Date();
-stats.duration = (stats.endTime - stats.startTime);
+stats.duration = (stats.endTime - startTime);
 console.log('\n' + '='.repeat(50));
 console.log('🎉 Crawling completed!');
-// Zaktualizowane statystyki
 console.log('📊 Final Statistics:', {
     pagesProcessed: stats.pagesProcessed,
     vehiclesFound: stats.vehiclesFound,
