@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Basic Data Scraper (Proven Pagination Logic) - Starting...');
+console.log('🚀 IAAI Advanced Data Scraper (with Modal Image Extraction) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -20,14 +20,12 @@ const dataset = await Dataset.open();
 
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
 
-// --- NOWA, ROZBUDOWANA FUNKCJA DO EKSTRAKCJI WSZYSTKICH DANYCH ---
+// --- FUNKCJA DO EKSTRAKCJI STATYCZNYCH DANYCH Z LISTY (BEZ ZMIAN) ---
 const extractVehicleDataFromList = async (page) => {
     return page.evaluate(() => {
         const results = [];
-        // Przechodzimy przez każdy wiersz (pojazd) na stronie
         document.querySelectorAll('div.table-row.table-row-border').forEach(row => {
             try {
-                // --- 1. Podstawowe dane (tytuł, link, obrazek) ---
                 const linkElement = row.querySelector('h4.heading-7 a');
                 const imageElement = row.querySelector('.table-cell--image img');
                 if (!linkElement || !imageElement) return;
@@ -35,7 +33,6 @@ const extractVehicleDataFromList = async (page) => {
                 const title = linkElement.textContent.trim();
                 const yearMatch = title.match(/^\d{4}/);
                 
-                // Tworzymy bazowy obiekt na dane pojazdu
                 const vehicleData = {
                     detailUrl: new URL(linkElement.getAttribute('href'), location.origin).href,
                     imageUrl: imageElement.getAttribute('data-src') || imageElement.getAttribute('src'),
@@ -45,20 +42,11 @@ const extractVehicleDataFromList = async (page) => {
                     model: yearMatch ? title.substring(5 + (title.substring(5).split(' ')[0]).length).trim() : title,
                 };
 
-                // --- 2. Zbieranie danych z listy (jak Stock, VIN, Odometer itd.) ---
-                // Mapa, która tłumaczy etykiety ze strony na klucze w naszym obiekcie
                 const keyMap = {
-                    'Stock #:': 'stock',
-                    'VIN:': 'vin',
-                    'Odometer:': 'odometer',
-                    'Start Code:': 'startCode',
-                    'Key:': 'key',
-                    'Engine:': 'engine',
-                    'Cylinders:': 'cylinders',
-                    'Fuel Type:': 'fuelType',
-                    'Location:': 'location',
-                    'Sale Document:': 'saleDocument',
-                    'ACV:': 'acv',
+                    'Stock #:': 'stock', 'VIN:': 'vin', 'Odometer:': 'odometer',
+                    'Start Code:': 'startCode', 'Key:': 'key', 'Engine:': 'engine',
+                    'Cylinders:': 'cylinders', 'Fuel Type:': 'fuelType', 'Location:': 'location',
+                    'Sale Document:': 'saleDocument', 'ACV:': 'acv',
                 };
 
                 row.querySelectorAll('.data-list__item').forEach(item => {
@@ -68,15 +56,13 @@ const extractVehicleDataFromList = async (page) => {
                     if (labelElement && valueElement) {
                         const labelText = labelElement.textContent.trim();
                         const key = keyMap[labelText];
-                        if (key) { // Jeśli etykieta jest w naszej mapie, zapisujemy dane
+                        if (key) {
                             vehicleData[key] = valueElement.textContent.trim();
                         }
                     }
                 });
 
-                // --- 3. Zbieranie tagów/statusów (np. Clear, Normal Wear & Tear) ---
                 const tags = [];
-                // Te dane są zwykle w pierwszej kolumnie z danymi
                 const primaryDataCell = row.querySelector('.table-cell--data-1');
                 if (primaryDataCell) {
                     primaryDataCell.querySelectorAll('.data-list__value--damage').forEach(tagEl => {
@@ -86,27 +72,17 @@ const extractVehicleDataFromList = async (page) => {
                 }
                 vehicleData.conditionTags = tags.join(' | ');
 
-                // --- 4. Zbieranie informacji o aukcji (data, cena Kup Teraz) ---
-                // Te dane są zwykle w ostatniej kolumnie
                 const auctionCell = row.querySelector('.table-cell--data-3');
                 if (auctionCell) {
                     const auctionDateEl = auctionCell.querySelector('[id^="auctionDate"]');
                     const bidStatusEl = auctionCell.querySelector('.btn--tertiary-light');
                     const buyNowPriceEl = auctionCell.querySelector('.btn--primary-cta');
-
-                    if (auctionDateEl) {
-                        vehicleData.auctionDate = auctionDateEl.textContent.trim();
-                    }
-                    if (bidStatusEl) {
-                        vehicleData.biddingStatus = bidStatusEl.textContent.trim();
-                    }
-                    if (buyNowPriceEl) {
-                        vehicleData.buyNowPrice = buyNowPriceEl.textContent.replace(/Buy Now/i, '').trim();
-                    }
+                    if (auctionDateEl) vehicleData.auctionDate = auctionDateEl.textContent.trim();
+                    if (bidStatusEl) vehicleData.biddingStatus = bidStatusEl.textContent.trim();
+                    if (buyNowPriceEl) vehicleData.buyNowPrice = buyNowPriceEl.textContent.replace(/Buy Now/i, '').trim();
                 }
                 
                 results.push(vehicleData);
-
             } catch (e) {
                 console.warn('Could not process a vehicle row:', e.message);
             }
@@ -115,7 +91,7 @@ const extractVehicleDataFromList = async (page) => {
     });
 };
 
-// *** FUNKCJA POMOCNICZA DO CZEKANIA NA ZNIKNIĘCIE LOADERA ***
+// --- FUNKCJE POMOCNICZE (BEZ ZMIAN) ---
 const waitForLoaderToDisappear = async (page, timeout = 20000) => {
     try {
         console.log('...waiting for page loader to disappear...');
@@ -208,13 +184,15 @@ const navigateToNextTenPages = async (page) => {
     }
 };
 
+
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
     maxConcurrency,
-    requestHandlerTimeoutSecs: 300,
+    requestHandlerTimeoutSecs: 600, // Zwiększony timeout na obsługę strony
     navigationTimeoutSecs: 120,
     launchContext: { launchOptions: { headless, args: ['--no-sandbox'] } },
 
+    // --- NOWY, ROZBUDOWANY REQUEST HANDLER ---
     async requestHandler({ page, request }) {
         console.log(`📖 Processing: ${request.url}`);
         try {
@@ -229,15 +207,77 @@ const crawler = new PlaywrightCrawler({
             while (currentPage <= maxPages) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
 
-                const vehiclesData = await extractVehicleDataFromList(page);
-                console.log(`✅ Found ${vehiclesData.length} vehicles on page ${currentPage}`);
+                // Krok 1: Pobierz wszystkie statyczne dane z widoku listy
+                const staticVehiclesData = await extractVehicleDataFromList(page);
+                
+                if (staticVehiclesData.length === 0) {
+                    console.log('⚠️ No vehicles found on this page, stopping pagination.');
+                    break;
+                }
 
-                if (vehiclesData.length > 0) {
-                    stats.vehiclesFound += vehiclesData.length;
-                    await dataset.pushData(vehiclesData);
-                } else {
-                   console.log('⚠️ No vehicles found on this page, stopping pagination.');
-                   break;
+                // Krok 2: Pobierz lokatory do wierszy, aby móc na nich wykonywać akcje
+                const vehicleRows = await page.locator('div.table-row.table-row-border').all();
+                
+                const itemsToProcessCount = Math.min(staticVehiclesData.length, vehicleRows.length);
+                console.log(`🔎 Found ${itemsToProcessCount} vehicles to process on this page.`);
+
+                // Krok 3: Przetwórz każdy pojazd, aby pobrać dodatkowe zdjęcia
+                const pageResults = [];
+                for (let i = 0; i < itemsToProcessCount; i++) {
+                    const vehicleData = staticVehiclesData[i];
+                    const row = vehicleRows[i];
+                    console.log(`  -> Processing vehicle ${i + 1}/${itemsToProcessCount}: ${vehicleData.title}`);
+
+                    try {
+                        const viewImagesButton = row.locator('button.btn-allimages');
+                        if (await viewImagesButton.count() > 0) {
+                            console.log('     - Clicking "View All Images" button...');
+                            await viewImagesButton.scrollIntoViewIfNeeded();
+                            await viewImagesButton.click();
+
+                            await page.waitForSelector('#image_360Modal.show', { state: 'visible', timeout: 15000 });
+                            console.log('     - Modal opened.');
+                            
+                            await page.waitForSelector('#hdnDimensions', { state: 'attached', timeout: 10000 });
+
+                            const jsonText = await page.locator('#hdnDimensions').textContent();
+                            const imageData = JSON.parse(jsonText);
+                            
+                            // Tworzenie URLi do obrazów w wysokiej rozdzielczości
+                            const allImageUrls = imageData.keys?.map(keyObj => `https://vis.iaai.com/resizer?imageKeys=${keyObj.K}&width=1920`) || [];
+                            const videoUrls = imageData.Videos?.map(video => video.URL) || [];
+                            
+                            vehicleData.allImageUrls = allImageUrls;
+                            vehicleData.videoUrls = videoUrls;
+                            console.log(`     - ✅ Extracted ${allImageUrls.length} images and ${videoUrls.length} videos.`);
+                            
+                            console.log('     - Closing modal...');
+                            await page.locator('#image_360Modal button[data-dismiss="modal"]').first().click();
+                            await page.waitForSelector('#image_360Modal.show', { state: 'hidden', timeout: 10000 });
+                            await page.waitForTimeout(250); // Krótka pauza na ustabilizowanie UI
+                        } else {
+                            console.log('     - "View All Images" button not found.');
+                            vehicleData.allImageUrls = [];
+                            vehicleData.videoUrls = [];
+                        }
+                    } catch (e) {
+                        console.warn(`     - ❌ Error processing image modal for ${vehicleData.title}: ${e.message}`);
+                        vehicleData.allImageUrls = vehicleData.allImageUrls || [];
+                        vehicleData.videoUrls = vehicleData.videoUrls || [];
+                        // Próba odzyskania, jeśli modal utknął
+                        if (await page.locator('#image_360Modal.show').isVisible({ timeout: 1000 })) {
+                            console.log('     - Modal seems stuck. Reloading page to recover.');
+                            await page.reload({ waitUntil: 'domcontentloaded' });
+                            break; // Przerwij pętlę dla tej strony po przeładowaniu
+                        }
+                    }
+                    pageResults.push(vehicleData);
+                }
+
+                if (pageResults.length > 0) {
+                    console.log(`💾 Pushing ${pageResults.length} vehicle records from page ${currentPage} to the dataset.`);
+                    await dataset.pushData(pageResults);
+                    stats.vehiclesFound += pageResults.length;
                 }
                 
                 stats.pagesProcessed = currentPage;
@@ -247,6 +287,7 @@ const crawler = new PlaywrightCrawler({
                     break;
                 }
                 
+                // Logika paginacji (bez zmian)
                 const nextPageNumber = currentPage + 1;
                 let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
 
