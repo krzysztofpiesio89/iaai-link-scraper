@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (v2 - Corrected Selectors) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (v3 - Full Script with ACV Logic) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -20,20 +20,18 @@ const dataset = await Dataset.open();
 
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
 
-// --- POPRAWIONA FUNKCJA DO EKSTRAKCJI DANYCH (NA PODSTAWIE DOM) ---
+// --- FUNKCJA DO EKSTRAKCJI DANYCH (z logiką dla ACV) ---
 const extractVehicleDataFromList = async (page) => {
     return page.evaluate(() => {
         const results = [];
         document.querySelectorAll('div.table-row.table-row-border').forEach(row => {
             try {
                 // --- Funkcje pomocnicze do pobierania tekstu ---
-                // Pobiera tekst z elementu, którego atrybut 'title' zaczyna się od danego tekstu
                 const getTextByTitle = (prefix) => {
                     const element = row.querySelector(`span[title^="${prefix}"]`);
                     return element ? element.textContent.trim() : null;
                 };
                 
-                // Pobiera tekst z dowolnego selektora
                 const getText = (selector) => {
                     const element = row.querySelector(selector);
                     return element ? element.textContent.trim() : null;
@@ -41,17 +39,16 @@ const extractVehicleDataFromList = async (page) => {
 
                 // --- Podstawowe informacje ---
                 const linkElement = row.querySelector('h4.heading-7 a');
-                if (!linkElement) return; // Pomiń wiersz, jeśli brakuje linku
+                if (!linkElement) return;
 
                 const detailUrl = new URL(linkElement.getAttribute('href'), location.origin).href;
                 const title = linkElement.textContent.trim();
                 const imageUrl = row.querySelector('.table-cell--image img')?.getAttribute('data-src') || row.querySelector('.table-cell--image img')?.getAttribute('src');
 
-                // --- Precyzyjna ekstrakcja danych na podstawie nowego HTML ---
+                // --- Ekstrakcja danych ---
                 let stock = null;
                 let vin = null;
                 
-                // Pobieranie Stock i VIN wymaga specjalnego podejścia
                  const dataItems = row.querySelectorAll('.data-list__item');
                  dataItems.forEach(item => {
                     const labelElement = item.querySelector('.data-list__label');
@@ -61,44 +58,42 @@ const extractVehicleDataFromList = async (page) => {
                             stock = item.querySelector('.data-list__value')?.textContent.trim() || null;
                         }
                         if (labelText.startsWith('VIN:')) {
-                            // Wartość VIN znajduje się w następnym elemencie, który nie ma klasy '.data-list__value'
                             vin = labelElement.nextElementSibling?.textContent.trim() || null;
                         }
                     }
                 });
 
-                // Typ uszkodzenia
                 const primaryDamage = getTextByTitle("Primary Damage:");
                 const lossType = getTextByTitle("Loss:");
-                const damageParts = [primaryDamage, lossType].filter(Boolean); // Łączy oba typy i usuwa puste wartości
+                const damageParts = [primaryDamage, lossType].filter(Boolean);
                 const damageType = damageParts.length > 0 ? damageParts.join(' / ') : "";
                 
-                // Pozostałe pola pobierane za pomocą atrybutu 'title'
                 const mileage = getTextByTitle("Odometer:");
                 const engineInfo = getTextByTitle("Engine:");
                 const fuelType = getTextByTitle("Fuel Type:");
                 const cylinders = getTextByTitle("Cylinder:");
                 const origin = getText('span[title^="Branch:"] a');
+                const engineStatus = getText('.badge');
 
-                // Status silnika (np. Run & Drive)
-                const engineStatus = getText('.badge'); // Ten selektor jest prostszy i prawidłowy
+                // --- LOGIKA DLA CENY LICYTACJI ---
+                let bidPrice = getText('.btn--pre-bid') || getText('[data-testid="current-bid-price"]');
+                const acvValue = getTextByTitle("ACV:");
 
-                // --- Ceny ---
-                // W dostarczonym HTML nie ma aktualnej ceny licytacji, jest tylko przycisk "Pre-Bid".
-                // Skrypt pobierze tekst z przycisku lub cenę, jeśli będzie dostępna.
-                const bidPrice = getText('.btn--pre-bid') || getText('[data-testid="current-bid-price"]'); 
-
+                // Jeśli status licytacji to "Pre-Bid" i wartość ACV jest dostępna, użyj ACV jako ceny.
+                if (bidPrice && bidPrice.trim().toLowerCase() === 'pre-bid' && acvValue) {
+                    bidPrice = acvValue.trim();
+                }
+                
                 // Cena Kup Teraz
                 let buyNowPrice = null;
                 const actionLinks = row.querySelectorAll('.data-list--action a');
                 actionLinks.forEach(link => {
                     const linkText = link.textContent.trim();
                     if (linkText.startsWith('Buy Now')) {
-                        buyNowPrice = linkText.replace('Buy Now ', ''); // Usuwa "Buy Now" zostawiając samą cenę
+                        buyNowPrice = linkText.replace('Buy Now ', '');
                     }
                 });
                 
-                // Link do wideo
                 const videoUrl = stock ? `https://mediastorageaccountprod.blob.core.windows.net/media/${stock}_VES-100_1` : null;
 
                 results.push({
