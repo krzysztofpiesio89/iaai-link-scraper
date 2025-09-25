@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (v3 - Full Script with ACV Logic) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (v4 - Title Split Logic) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -20,7 +20,7 @@ const dataset = await Dataset.open();
 
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
 
-// --- FUNKCJA DO EKSTRAKCJI DANYCH (z logiką dla ACV) ---
+// --- FUNKCJA DO EKSTRAKCJI DANYCH (z logiką rozdzielającą tytuł) ---
 const extractVehicleDataFromList = async (page) => {
     return page.evaluate(() => {
         const results = [];
@@ -42,10 +42,34 @@ const extractVehicleDataFromList = async (page) => {
                 if (!linkElement) return;
 
                 const detailUrl = new URL(linkElement.getAttribute('href'), location.origin).href;
-                const title = linkElement.textContent.trim();
+                const fullTitle = linkElement.textContent.trim();
                 const imageUrl = row.querySelector('.table-cell--image img')?.getAttribute('data-src') || row.querySelector('.table-cell--image img')?.getAttribute('src');
 
-                // --- Ekstrakcja danych ---
+                // --- NOWA LOGIKA: Rozdzielanie tytułu na rok, markę, model i wersję ---
+                const yearMatch = fullTitle.match(/^\d{4}/);
+                const year = yearMatch ? yearMatch[0] : null;
+
+                let make = null;
+                let model = null;
+                let version = null;
+
+                if (year) {
+                    // Pobierz wszystko po roku i usuń zbędne spacje
+                    const restOfTitle = fullTitle.substring(year.length).trim();
+                    const parts = restOfTitle.split(' ');
+                    
+                    // Pierwszy człon to marka
+                    make = parts.shift() || null; 
+                    
+                    // Drugi człon to model
+                    model = parts.shift() || null;
+                    
+                    // Cała reszta to wersja
+                    version = parts.join(' ').trim();
+                }
+                // --- KONIEC NOWEJ LOGIKI ---
+
+                // --- Ekstrakcja pozostałych danych ---
                 let stock = null;
                 let vin = null;
                 
@@ -74,17 +98,14 @@ const extractVehicleDataFromList = async (page) => {
                 const cylinders = getTextByTitle("Cylinder:");
                 const origin = getText('span[title^="Branch:"] a');
                 const engineStatus = getText('.badge');
-
-                // --- LOGIKA DLA CENY LICYTACJI ---
+                
                 let bidPrice = getText('.btn--pre-bid') || getText('[data-testid="current-bid-price"]');
                 const acvValue = getTextByTitle("ACV:");
-
-                // Jeśli status licytacji to "Pre-Bid" i wartość ACV jest dostępna, użyj ACV jako ceny.
+                
                 if (bidPrice && bidPrice.trim().toLowerCase() === 'pre-bid' && acvValue) {
                     bidPrice = acvValue.trim();
                 }
                 
-                // Cena Kup Teraz
                 let buyNowPrice = null;
                 const actionLinks = row.querySelectorAll('.data-list--action a');
                 actionLinks.forEach(link => {
@@ -98,7 +119,10 @@ const extractVehicleDataFromList = async (page) => {
 
                 results.push({
                     stock,
-                    title,
+                    year,
+                    make,
+                    model,
+                    version,
                     damageType,
                     mileage,
                     engineStatus,
