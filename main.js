@@ -20,7 +20,7 @@ const dataset = await Dataset.open();
 
 const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
 
-// --- FUNKCJA DO EKSTRAKCJI DANYCH (z logiką rozdzielającą tytuł) ---
+// --- FUNKCJA DO EKSTRAKCJI DANYCH (z logiką rozdzielającą tytuł i datą aukcji) ---
 const extractVehicleDataFromList = async (page) => {
     return page.evaluate(() => {
         const results = [];
@@ -54,17 +54,10 @@ const extractVehicleDataFromList = async (page) => {
                 let version = null;
 
                 if (year) {
-                    // Pobierz wszystko po roku i usuń zbędne spacje
                     const restOfTitle = fullTitle.substring(year.length).trim();
                     const parts = restOfTitle.split(' ');
-                    
-                    // Pierwszy człon to marka
                     make = parts.shift() || null; 
-                    
-                    // Drugi człon to model
                     model = parts.shift() || null;
-                    
-                    // Cała reszta to wersja
                     version = parts.join(' ').trim();
                 }
                 // --- KONIEC NOWEJ LOGIKI ---
@@ -73,8 +66,8 @@ const extractVehicleDataFromList = async (page) => {
                 let stock = null;
                 let vin = null;
                 
-                 const dataItems = row.querySelectorAll('.data-list__item');
-                 dataItems.forEach(item => {
+                const dataItems = row.querySelectorAll('.data-list__item');
+                dataItems.forEach(item => {
                     const labelElement = item.querySelector('.data-list__label');
                     if (labelElement) {
                         const labelText = labelElement.textContent.trim();
@@ -115,6 +108,9 @@ const extractVehicleDataFromList = async (page) => {
                     }
                 });
                 
+                // <<< ---- NOWA LINIA: Pobieranie daty aukcji ---- >>>
+                const auctionDate = getText('.data-list__value--action');
+
                 const videoUrl = stock ? `https://mediastorageaccountprod.blob.core.windows.net/media/${stock}_VES-100_1` : null;
 
                 results.push({
@@ -123,6 +119,8 @@ const extractVehicleDataFromList = async (page) => {
                     make,
                     model,
                     version,
+                    // <<< ---- DODAJ TUTAJ: Dodanie daty do obiektu wynikowego ---- >>>
+                    auctionDate,
                     damageType,
                     mileage,
                     engineStatus,
@@ -144,7 +142,6 @@ const extractVehicleDataFromList = async (page) => {
         return results;
     });
 };
-
 
 // *** FUNKCJA POMOCNICZA DO CZEKANIA NA ZNIKNIĘCIE LOADERA ***
 const waitForLoaderToDisappear = async (page, timeout = 20000) => {
