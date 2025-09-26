@@ -110,7 +110,7 @@ const extractVehicleDataFromList = async (page) => {
                 
                 // <<< ---- NOWA LINIA: Pobieranie daty aukcji ---- >>>
                 const auctionDate = getText('.data-list__value--action');
-
+                const is360 = !!row.querySelector('span.media_360_view');
                 const videoUrl = stock ? `https://mediastorageaccountprod.blob.core.windows.net/media/${stock}_VES-100_1` : null;
 
                 results.push({
@@ -121,6 +121,7 @@ const extractVehicleDataFromList = async (page) => {
                     version,
                     // <<< ---- DODAJ TUTAJ: Dodanie daty do obiektu wynikowego ---- >>>
                     auctionDate,
+                    is360,
                     damageType,
                     mileage,
                     engineStatus,
