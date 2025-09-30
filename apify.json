@@ -19,6 +19,7 @@
       "actorSpecification": 1,
       "title": "IAAI Auction Links",
       "description": "Dataset containing discovered IAAI auction links with metadata",
+      "dataset": "./dataset_schema.json",
       "views": {
         "overview": {
           "title": "Overview",
