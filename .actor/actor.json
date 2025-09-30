@@ -1,0 +1,57 @@
+{
+  "actorSpecification": 1,
+  "name": "iaai-scraper",
+  "title": "IAAI Enhanced Data Scraper",
+  "version": "1.0.0",
+  "storages": {
+    "dataset": {
+      "actorSpecification": 1,
+      "views": {
+        "overview": {
+          "title": "Vehicles Overview",
+          "transformation": {
+            "fields": [
+              "imageUrl",
+              "detailUrl",
+              "year",
+              "make",
+              "model",
+              "version",
+              "vin",
+              "stock",
+              "damageType",
+              "mileage",
+              "engineInfo",
+              "fuelType",
+              "cylinders",
+              "auctionDate",
+              "bidPrice",
+              "buyNowPrice"
+            ]
+          },
+          "display": {
+            "component": "table",
+            "properties": {
+              "imageUrl": { "label": "Image", "format": "image" },
+              "detailUrl": { "label": "Detail", "format": "link" },
+              "year": { "label": "Year", "format": "number" },
+              "make": { "label": "Make", "format": "text" },
+              "model": { "label": "Model", "format": "text" },
+              "version": { "label": "Trim", "format": "text" },
+              "vin": { "label": "VIN", "format": "text" },
+              "stock": { "label": "Stock #", "format": "text" },
+              "damageType": { "label": "Damage", "format": "text" },
+              "mileage": { "label": "Mileage", "format": "text" },
+              "engineInfo": { "label": "Engine", "format": "text" },
+              "fuelType": { "label": "Fuel", "format": "text" },
+              "cylinders": { "label": "Cylinders", "format": "number" },
+              "auctionDate": { "label": "Auction Date", "format": "date" },
+              "bidPrice": { "label": "Bid Price", "format": "text" },
+              "buyNowPrice": { "label": "Buy Now", "format": "text" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
