@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (v4 - Title Split Logic) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (v5 - Total Count Logic) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -12,14 +12,35 @@ const {
     proxyConfiguration,
     headless = true,
     debugMode = false,
-    // Ustawienie na bardzo dużą wartość, ale główna logika końca będzie w handlerze.
     maxPages = 99999 
 } = input;
 
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
 const dataset = await Dataset.open();
 
-const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date() };
+const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date(), totalExpected: 0 };
+
+// --- FUNKCJA DO POBRANIA CAŁKOWITEJ LICZBY OGŁOSZEŃ ---
+const getTotalVehiclesCount = async (page) => {
+    try {
+        console.log('🔢 Getting total vehicles count...');
+        const totalElement = await page.locator('label.label--total#headerTotalAmount').first();
+        
+        if (await totalElement.count() > 0) {
+            const totalText = await totalElement.textContent();
+            // Usuń przecinki i konwertuj na liczbę
+            const total = parseInt(totalText.replace(/,/g, '').trim(), 10);
+            console.log(`📊 Total vehicles available: ${total.toLocaleString()}`);
+            return total;
+        }
+        
+        console.log('⚠️ Could not find total count element');
+        return 0;
+    } catch (error) {
+        console.log('⚠️ Error getting total count:', error.message);
+        return 0;
+    }
+};
 
 // --- FUNKCJA DO EKSTRAKCJI DANYCH (z logiką rozdzielającą tytuł i datą aukcji) ---
 const extractVehicleDataFromList = async (page) => {
@@ -46,7 +67,7 @@ const extractVehicleDataFromList = async (page) => {
                 const fullTitle = linkElement.textContent.trim();
                 const imageUrl = row.querySelector('.table-cell--image img')?.getAttribute('data-src') || row.querySelector('.table-cell--image img')?.getAttribute('src');
 
-                // --- NOWA LOGIKA: Rozdzielanie tytułu na rok, markę, model i wersję ---
+                // --- Rozdzielanie tytułu na rok, markę, model i wersję ---
                 const yearMatch = fullTitle.match(/^\d{4}/);
                 const year = yearMatch ? yearMatch[0] : null;
 
@@ -61,7 +82,6 @@ const extractVehicleDataFromList = async (page) => {
                     model = parts.shift() || null;
                     version = parts.join(' ').trim();
                 }
-                // --- KONIEC NOWEJ LOGIKI ---
 
                 // --- Ekstrakcja pozostałych danych ---
                 let stock = null;
@@ -109,7 +129,6 @@ const extractVehicleDataFromList = async (page) => {
                     }
                 });
                 
-                // <<< ---- NOWA LINIA: Pobieranie daty aukcji ---- >>>
                 const auctionDate = getText('.data-list__value--action');
                 const is360 = !!row.querySelector('span.media_360_view');
                 const videoUrl = stock ? `https://mediastorageaccountprod.blob.core.windows.net/media/${stock}_VES-100_1` : null;
@@ -120,7 +139,6 @@ const extractVehicleDataFromList = async (page) => {
                     make,
                     model,
                     version,
-                    // <<< ---- DODAJ TUTAJ: Dodanie daty do obiektu wynikowego ---- >>>
                     auctionDate,
                     is360,
                     damageType,
@@ -193,7 +211,6 @@ const navigateToPageNumber = async (page, pageNumber) => {
         if (await pageButton.count() > 0 && await pageButton.isEnabled()) {
             console.log(`🔢 Clicking page number button: ${pageNumber}`);
             
-            // KLUCZOWE: Używamy unikalnego elementu do czekania na odświeżenie
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
             
@@ -211,7 +228,6 @@ const navigateToPageNumber = async (page, pageNumber) => {
         }
         return false;
     } catch (error) {
-        // Ignorujemy błędy, jeśli przycisk zniknął (np. osiągnięto koniec paginacji)
         return false; 
     }
 };
@@ -223,7 +239,6 @@ const navigateToNextTenPages = async (page) => {
         if (await nextTenButton.count() > 0 && await nextTenButton.isEnabled()) {
             console.log('⏭️ Clicking "Next 10 Pages"...');
             
-            // KLUCZOWE: Używamy unikalnego elementu do czekania na odświeżenie
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
 
@@ -240,7 +255,6 @@ const navigateToNextTenPages = async (page) => {
         }
         return false;
     } catch (error) {
-        // Ignorujemy błędy, jeśli przycisk zniknął (np. osiągnięto koniec paginacji)
         return false;
     }
 };
@@ -262,16 +276,20 @@ const crawler = new PlaywrightCrawler({
                 return;
             }
 
+            // NOWE: Pobierz całkowitą liczbę ogłoszeń na początku
+            const totalVehicles = await getTotalVehiclesCount(page);
+            stats.totalExpected = totalVehicles;
+
             let currentPage = 1;
             
-            // ZMIANA: Zmieniamy pętlę na nieskończoną, kontrolowaną warunkami 'break'
             while (true) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
+                console.log(`📊 Progress: ${stats.vehiclesFound}/${totalVehicles} vehicles (${((stats.vehiclesFound/totalVehicles)*100).toFixed(1)}%)`);
 
                 const vehiclesData = await extractVehicleDataFromList(page);
                 console.log(`✅ Found ${vehiclesData.length} vehicles on page ${currentPage}`);
 
-                // WARUNEK ZAKOŃCZENIA 1: Jeśli nie znaleziono żadnych pojazdów na stronie
+                // WARUNEK 1: Brak pojazdów na stronie
                 if (vehiclesData.length === 0) {
                    console.log('⚠️ No vehicles found on this page. Stopping pagination.');
                    break;
@@ -281,17 +299,23 @@ const crawler = new PlaywrightCrawler({
                 await dataset.pushData(vehiclesData);
                 stats.pagesProcessed = currentPage;
 
+                // WARUNEK 2: Osiągnięto całkowitą liczbę ogłoszeń (z niewielkim marginesem)
+                if (totalVehicles > 0 && stats.vehiclesFound >= totalVehicles) {
+                    console.log(`🎯 Reached total expected vehicles: ${stats.vehiclesFound}/${totalVehicles}`);
+                    console.log('✅ All vehicles have been scraped!');
+                    break;
+                }
+
                 // --- LOGIKA NAWIGACJI ---
                 const nextPageNumber = currentPage + 1;
                 let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
 
                 if (!navigationSuccess) {
-                    // Jeśli nie udało się kliknąć przycisku numerycznego, spróbuj przycisku "Next 10"
                     console.log(`🔢 Button for page ${nextPageNumber} not found. Attempting to jump to the next 10 pages.`);
                     navigationSuccess = await navigateToNextTenPages(page);
                 }
 
-                // WARUNEK ZAKOŃCZENIA 2: Jeśli ŻADNA nawigacja nie powiodła się
+                // WARUNEK 3: Brak możliwości nawigacji
                 if (navigationSuccess) {
                     currentPage++;
                 } else {
@@ -320,7 +344,9 @@ console.log('\n' + '='.repeat(50));
 console.log('🎉 Crawling completed!');
 console.log('📊 Final Statistics:', {
     pagesProcessed: stats.pagesProcessed,
+    totalExpected: stats.totalExpected,
     vehiclesFound: stats.vehiclesFound,
+    completeness: stats.totalExpected > 0 ? `${((stats.vehiclesFound/stats.totalExpected)*100).toFixed(1)}%` : 'N/A',
     errors: stats.errors,
     duration: `${Math.round(stats.duration / 1000)}s`,
 });
