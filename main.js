@@ -12,7 +12,8 @@ const {
     proxyConfiguration,
     headless = true,
     debugMode = false,
-    maxPages = 999
+    // Ustawienie na bardzo dużą wartość, ale główna logika końca będzie w handlerze.
+    maxPages = 99999 
 } = input;
 
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
@@ -189,8 +190,10 @@ const navigateToPageNumber = async (page, pageNumber) => {
     try {
         const pageButtonSelector = `button#PageNumber${pageNumber}`;
         const pageButton = page.locator(pageButtonSelector);
-        if (await pageButton.count() > 0) {
+        if (await pageButton.count() > 0 && await pageButton.isEnabled()) {
             console.log(`🔢 Clicking page number button: ${pageNumber}`);
+            
+            // KLUCZOWE: Używamy unikalnego elementu do czekania na odświeżenie
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
             
@@ -208,8 +211,8 @@ const navigateToPageNumber = async (page, pageNumber) => {
         }
         return false;
     } catch (error) {
-        console.log(`❌ Failed to click page ${pageNumber}: ${error.message}`);
-        return false;
+        // Ignorujemy błędy, jeśli przycisk zniknął (np. osiągnięto koniec paginacji)
+        return false; 
     }
 };
 
@@ -219,6 +222,8 @@ const navigateToNextTenPages = async (page) => {
         const nextTenButton = page.locator('button.btn-next-10');
         if (await nextTenButton.count() > 0 && await nextTenButton.isEnabled()) {
             console.log('⏭️ Clicking "Next 10 Pages"...');
+            
+            // KLUCZOWE: Używamy unikalnego elementu do czekania na odświeżenie
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
 
@@ -235,7 +240,7 @@ const navigateToNextTenPages = async (page) => {
         }
         return false;
     } catch (error) {
-        console.log(`❌ Failed to click "Next 10 Pages": ${error.message}`);
+        // Ignorujemy błędy, jeśli przycisk zniknął (np. osiągnięto koniec paginacji)
         return false;
     }
 };
@@ -258,35 +263,35 @@ const crawler = new PlaywrightCrawler({
             }
 
             let currentPage = 1;
-            while (currentPage <= maxPages) {
+            
+            // ZMIANA: Zmieniamy pętlę na nieskończoną, kontrolowaną warunkami 'break'
+            while (true) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
 
                 const vehiclesData = await extractVehicleDataFromList(page);
                 console.log(`✅ Found ${vehiclesData.length} vehicles on page ${currentPage}`);
 
-                if (vehiclesData.length > 0) {
-                    stats.vehiclesFound += vehiclesData.length;
-                    await dataset.pushData(vehiclesData);
-                } else {
-                   console.log('⚠️ No vehicles found on this page, stopping pagination.');
+                // WARUNEK ZAKOŃCZENIA 1: Jeśli nie znaleziono żadnych pojazdów na stronie
+                if (vehiclesData.length === 0) {
+                   console.log('⚠️ No vehicles found on this page. Stopping pagination.');
                    break;
                 }
                 
+                stats.vehiclesFound += vehiclesData.length;
+                await dataset.pushData(vehiclesData);
                 stats.pagesProcessed = currentPage;
 
-                if (currentPage >= maxPages) {
-                    console.log(`🏁 Reached maxPages limit of ${maxPages}. Stopping.`);
-                    break;
-                }
-                
+                // --- LOGIKA NAWIGACJI ---
                 const nextPageNumber = currentPage + 1;
                 let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
 
                 if (!navigationSuccess) {
+                    // Jeśli nie udało się kliknąć przycisku numerycznego, spróbuj przycisku "Next 10"
                     console.log(`🔢 Button for page ${nextPageNumber} not found. Attempting to jump to the next 10 pages.`);
                     navigationSuccess = await navigateToNextTenPages(page);
                 }
 
+                // WARUNEK ZAKOŃCZENIA 2: Jeśli ŻADNA nawigacja nie powiodła się
                 if (navigationSuccess) {
                     currentPage++;
                 } else {
