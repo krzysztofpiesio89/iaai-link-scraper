@@ -24,14 +24,36 @@ const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new D
 const getTotalVehiclesCount = async (page) => {
     try {
         console.log('🔢 Getting total vehicles count...');
-        const totalElement = await page.locator('label.label--total#headerTotalAmount').first();
         
-        if (await totalElement.count() > 0) {
-            const totalText = await totalElement.textContent();
-            // Usuń przecinki i konwertuj na liczbę
-            const total = parseInt(totalText.replace(/,/g, '').trim(), 10);
-            console.log(`📊 Total vehicles available: ${total.toLocaleString()}`);
-            return total;
+        // Szukamy elementu zawierającego tekst "VEHICLES" (może być w różnych formatach)
+        const totalText = await page.evaluate(() => {
+            // Szukamy po klasie label--total
+            const labelElement = document.querySelector('label.label--total');
+            if (labelElement) {
+                return labelElement.textContent.trim();
+            }
+            
+            // Alternatywnie szukamy po tekście zawierającym "VEHICLES"
+            const headings = document.querySelectorAll('h2, h3, h4, div, span, label');
+            for (const heading of headings) {
+                const text = heading.textContent.trim();
+                if (text.toUpperCase().includes('VEHICLES') && /\d/.test(text)) {
+                    return text;
+                }
+            }
+            
+            return null;
+        });
+        
+        if (totalText) {
+            console.log(`📝 Found text: "${totalText}"`);
+            // Wyciągnij liczbę z tekstu (np. "24,183 VEHICLES" -> 24183)
+            const numberMatch = totalText.match(/[\d,]+/);
+            if (numberMatch) {
+                const total = parseInt(numberMatch[0].replace(/,/g, ''), 10);
+                console.log(`📊 Total vehicles available: ${total.toLocaleString()}`);
+                return total;
+            }
         }
         
         console.log('⚠️ Could not find total count element');
