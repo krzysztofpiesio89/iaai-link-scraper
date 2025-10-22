@@ -12,7 +12,7 @@ const {
     proxyConfiguration,
     headless = true,
     debugMode = false,
-    maxPages = 50
+    maxPages = 999
 } = input;
 
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
