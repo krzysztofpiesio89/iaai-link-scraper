@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (v4 - Title Split Logic) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (v4 - Title Split Logic & Total Count Fix) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -47,7 +47,7 @@ const extractVehicleDataFromList = async (page) => {
                 const fullTitle = linkElement.textContent.trim();
                 const imageUrl = row.querySelector('.table-cell--image img')?.getAttribute('data-src') || row.querySelector('.table-cell--image img')?.getAttribute('src');
 
-                // --- NOWA LOGIKA: Rozdzielanie tytułu na rok, markę, model i wersję ---
+                // --- LOGIKA: Rozdzielanie tytułu na rok, markę, model i wersję ---
                 const yearMatch = fullTitle.match(/^\d{4}/);
                 const year = yearMatch ? yearMatch[0] : null;
 
@@ -62,7 +62,7 @@ const extractVehicleDataFromList = async (page) => {
                     model = parts.shift() || null;
                     version = parts.join(' ').trim();
                 }
-                // --- KONIEC NOWEJ LOGIKI ---
+                // --- KONIEC LOGIKI ---
 
                 // --- Ekstrakcja pozostałych danych ---
                 let stock = null;
@@ -185,12 +185,16 @@ const waitForResults = async (page, timeout = 25000) => {
     }
 };
 
-// *** NOWA FUNKCJA: Pobieranie łącznej liczby aukcji ***
+// *** POPRAWIONA FUNKCJA: Pobieranie łącznej liczby aukcji (lepszy selektor i timeout) ***
 const getTotalAuctionsCount = async (page) => {
-    const selector = 'label#headerTotalAmount';
+    // Używamy selektora klasy CSS, który jest stabilniejszy i widoczny na obrazku
+    const selector = 'label.label--total';
     try {
-        const countElement = await page.waitForSelector(selector, { state: 'attached', timeout: 5000 });
+        console.log(`...attempting to find total count using selector: ${selector}`);
+        // Zwiększamy timeout do 10 sekund (było 5)
+        const countElement = await page.waitForSelector(selector, { state: 'attached', timeout: 10000 });
         const textContent = await countElement.textContent();
+        
         // Usuń przecinki i spróbuj sparsować jako liczbę
         const count = parseInt(textContent.replace(/,/g, ''), 10);
         if (isNaN(count)) {
@@ -199,11 +203,12 @@ const getTotalAuctionsCount = async (page) => {
         }
         return count;
     } catch (error) {
-        console.log(`⚠️ Could not find or read total auctions element (${selector}).`);
+        // Logujemy błąd z dodatkową informacją o selektorze
+        console.log(`⚠️ Could not find or read total auctions element (${selector}) within timeout. Error: ${error.message}`);
         return 'N/A';
     }
 }
-// *** KONIEC NOWEJ FUNKCJI ***
+// *** KONIEC POPRAWIONEJ FUNKCJI ***
 
 
 // --- FUNKCJA DO NAWIGACJI PO STRONACH ---
@@ -283,7 +288,7 @@ const crawler = new PlaywrightCrawler({
                 return;
             }
             
-            // *** ZMIANA: Sprawdzenie łącznej liczby aukcji ***
+            // *** ZMIANA: Sprawdzenie łącznej liczby aukcji za pomocą ulepszonej funkcji ***
             const totalCount = await getTotalAuctionsCount(page);
             stats.totalVehiclesOnSite = totalCount;
             console.log(`\n🎉 Total auctions found on site: ${totalCount}`);
@@ -291,7 +296,7 @@ const crawler = new PlaywrightCrawler({
 
             let currentPage = 1;
             
-            // ZMIANA: Zmieniamy pętlę na nieskończoną, kontrolowaną warunkami 'break'
+            // ZMIANA: Pętla na nieskończoną, kontrolowana warunkami 'break'
             while (true) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
 
@@ -326,7 +331,7 @@ const crawler = new PlaywrightCrawler({
                     break;
                 }
                 
-                // *** DODATKOWY WARUNEK ZAKOŃCZENIA: Zgodność ze zgromadzoną łączną liczbą (tylko w celach informacyjnych, nie zmienia głównej logiki stopu) ***
+                // *** DODATKOWY WARUNEK ZAKOŃCZENIA: Zgodność ze zgromadzoną łączną liczbą ***
                 if (typeof stats.totalVehiclesOnSite === 'number' && stats.vehiclesFound >= stats.totalVehiclesOnSite) {
                     console.log(`\n🛑 Reached or exceeded the reported total of ${stats.totalVehiclesOnSite} vehicles. Stopping crawl.`);
                     break;
@@ -354,7 +359,7 @@ console.log('🎉 Crawling completed!');
 console.log('📊 Final Statistics:', {
     pagesProcessed: stats.pagesProcessed,
     vehiclesFound: stats.vehiclesFound,
-    totalVehiclesOnSite: stats.totalVehiclesOnSite, // *** ZMIANA: Dodano do statystyk ***
+    totalVehiclesOnSite: stats.totalVehiclesOnSite, 
     errors: stats.errors,
     duration: `${Math.round(stats.duration / 1000)}s`,
 });
