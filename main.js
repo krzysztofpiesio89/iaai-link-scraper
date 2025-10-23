@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (v5 - Total Count Logic) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (v4 - Title Split Logic) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -12,57 +12,15 @@ const {
     proxyConfiguration,
     headless = true,
     debugMode = false,
+    // Ustawienie na bardzo dużą wartość, ale główna logika końca będzie w handlerze.
     maxPages = 99999 
 } = input;
 
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
 const dataset = await Dataset.open();
 
-const stats = { pagesProcessed: 0, vehiclesFound: 0, errors: 0, startTime: new Date(), totalExpected: 0 };
-
-// --- FUNKCJA DO POBRANIA CAŁKOWITEJ LICZBY OGŁOSZEŃ ---
-const getTotalVehiclesCount = async (page) => {
-    try {
-        console.log('🔢 Getting total vehicles count...');
-        
-        // Szukamy elementu zawierającego tekst "VEHICLES" (może być w różnych formatach)
-        const totalText = await page.evaluate(() => {
-            // Szukamy po klasie label--total
-            const labelElement = document.querySelector('label.label--total');
-            if (labelElement) {
-                return labelElement.textContent.trim();
-            }
-            
-            // Alternatywnie szukamy po tekście zawierającym "VEHICLES"
-            const headings = document.querySelectorAll('h2, h3, h4, div, span, label');
-            for (const heading of headings) {
-                const text = heading.textContent.trim();
-                if (text.toUpperCase().includes('VEHICLES') && /\d/.test(text)) {
-                    return text;
-                }
-            }
-            
-            return null;
-        });
-        
-        if (totalText) {
-            console.log(`📝 Found text: "${totalText}"`);
-            // Wyciągnij liczbę z tekstu (np. "24,183 VEHICLES" -> 24183)
-            const numberMatch = totalText.match(/[\d,]+/);
-            if (numberMatch) {
-                const total = parseInt(numberMatch[0].replace(/,/g, ''), 10);
-                console.log(`📊 Total vehicles available: ${total.toLocaleString()}`);
-                return total;
-            }
-        }
-        
-        console.log('⚠️ Could not find total count element');
-        return 0;
-    } catch (error) {
-        console.log('⚠️ Error getting total count:', error.message);
-        return 0;
-    }
-};
+// *** ZMIANA: Dodano pole na łączną liczbę pojazdów ze strony ***
+const stats = { pagesProcessed: 0, vehiclesFound: 0, totalVehiclesOnSite: 'N/A', errors: 0, startTime: new Date() };
 
 // --- FUNKCJA DO EKSTRAKCJI DANYCH (z logiką rozdzielającą tytuł i datą aukcji) ---
 const extractVehicleDataFromList = async (page) => {
@@ -89,7 +47,7 @@ const extractVehicleDataFromList = async (page) => {
                 const fullTitle = linkElement.textContent.trim();
                 const imageUrl = row.querySelector('.table-cell--image img')?.getAttribute('data-src') || row.querySelector('.table-cell--image img')?.getAttribute('src');
 
-                // --- Rozdzielanie tytułu na rok, markę, model i wersję ---
+                // --- NOWA LOGIKA: Rozdzielanie tytułu na rok, markę, model i wersję ---
                 const yearMatch = fullTitle.match(/^\d{4}/);
                 const year = yearMatch ? yearMatch[0] : null;
 
@@ -104,6 +62,7 @@ const extractVehicleDataFromList = async (page) => {
                     model = parts.shift() || null;
                     version = parts.join(' ').trim();
                 }
+                // --- KONIEC NOWEJ LOGIKI ---
 
                 // --- Ekstrakcja pozostałych danych ---
                 let stock = null;
@@ -151,6 +110,7 @@ const extractVehicleDataFromList = async (page) => {
                     }
                 });
                 
+                // Pobieranie daty aukcji
                 const auctionDate = getText('.data-list__value--action');
                 const is360 = !!row.querySelector('span.media_360_view');
                 const videoUrl = stock ? `https://mediastorageaccountprod.blob.core.windows.net/media/${stock}_VES-100_1` : null;
@@ -225,6 +185,27 @@ const waitForResults = async (page, timeout = 25000) => {
     }
 };
 
+// *** NOWA FUNKCJA: Pobieranie łącznej liczby aukcji ***
+const getTotalAuctionsCount = async (page) => {
+    const selector = 'label#headerTotalAmount';
+    try {
+        const countElement = await page.waitForSelector(selector, { state: 'attached', timeout: 5000 });
+        const textContent = await countElement.textContent();
+        // Usuń przecinki i spróbuj sparsować jako liczbę
+        const count = parseInt(textContent.replace(/,/g, ''), 10);
+        if (isNaN(count)) {
+            console.log(`⚠️ Could not parse total vehicle count from text: ${textContent}`);
+            return 'N/A';
+        }
+        return count;
+    } catch (error) {
+        console.log(`⚠️ Could not find or read total auctions element (${selector}).`);
+        return 'N/A';
+    }
+}
+// *** KONIEC NOWEJ FUNKCJI ***
+
+
 // --- FUNKCJA DO NAWIGACJI PO STRONACH ---
 const navigateToPageNumber = async (page, pageNumber) => {
     try {
@@ -233,6 +214,7 @@ const navigateToPageNumber = async (page, pageNumber) => {
         if (await pageButton.count() > 0 && await pageButton.isEnabled()) {
             console.log(`🔢 Clicking page number button: ${pageNumber}`);
             
+            // KLUCZOWE: Używamy unikalnego elementu do czekania na odświeżenie
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
             
@@ -250,6 +232,7 @@ const navigateToPageNumber = async (page, pageNumber) => {
         }
         return false;
     } catch (error) {
+        // Ignorujemy błędy, jeśli przycisk zniknął (np. osiągnięto koniec paginacji)
         return false; 
     }
 };
@@ -261,6 +244,7 @@ const navigateToNextTenPages = async (page) => {
         if (await nextTenButton.count() > 0 && await nextTenButton.isEnabled()) {
             console.log('⏭️ Clicking "Next 10 Pages"...');
             
+            // KLUCZOWE: Używamy unikalnego elementu do czekania na odświeżenie
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
 
@@ -277,6 +261,7 @@ const navigateToNextTenPages = async (page) => {
         }
         return false;
     } catch (error) {
+        // Ignorujemy błędy, jeśli przycisk zniknął (np. osiągnięto koniec paginacji)
         return false;
     }
 };
@@ -297,21 +282,23 @@ const crawler = new PlaywrightCrawler({
                 console.log('Stopping processing for this URL as no results were found.');
                 return;
             }
-
-            // NOWE: Pobierz całkowitą liczbę ogłoszeń na początku
-            const totalVehicles = await getTotalVehiclesCount(page);
-            stats.totalExpected = totalVehicles;
+            
+            // *** ZMIANA: Sprawdzenie łącznej liczby aukcji ***
+            const totalCount = await getTotalAuctionsCount(page);
+            stats.totalVehiclesOnSite = totalCount;
+            console.log(`\n🎉 Total auctions found on site: ${totalCount}`);
+            // *** KONIEC ZMIANY ***
 
             let currentPage = 1;
             
+            // ZMIANA: Zmieniamy pętlę na nieskończoną, kontrolowaną warunkami 'break'
             while (true) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
-                console.log(`📊 Progress: ${stats.vehiclesFound}/${totalVehicles} vehicles (${((stats.vehiclesFound/totalVehicles)*100).toFixed(1)}%)`);
 
                 const vehiclesData = await extractVehicleDataFromList(page);
                 console.log(`✅ Found ${vehiclesData.length} vehicles on page ${currentPage}`);
 
-                // WARUNEK 1: Brak pojazdów na stronie
+                // WARUNEK ZAKOŃCZENIA 1: Jeśli nie znaleziono żadnych pojazdów na stronie
                 if (vehiclesData.length === 0) {
                    console.log('⚠️ No vehicles found on this page. Stopping pagination.');
                    break;
@@ -321,27 +308,27 @@ const crawler = new PlaywrightCrawler({
                 await dataset.pushData(vehiclesData);
                 stats.pagesProcessed = currentPage;
 
-                // WARUNEK 2: Osiągnięto całkowitą liczbę ogłoszeń (z niewielkim marginesem)
-                if (totalVehicles > 0 && stats.vehiclesFound >= totalVehicles) {
-                    console.log(`🎯 Reached total expected vehicles: ${stats.vehiclesFound}/${totalVehicles}`);
-                    console.log('✅ All vehicles have been scraped!');
-                    break;
-                }
-
                 // --- LOGIKA NAWIGACJI ---
                 const nextPageNumber = currentPage + 1;
                 let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
 
                 if (!navigationSuccess) {
+                    // Jeśli nie udało się kliknąć przycisku numerycznego, spróbuj przycisku "Next 10"
                     console.log(`🔢 Button for page ${nextPageNumber} not found. Attempting to jump to the next 10 pages.`);
                     navigationSuccess = await navigateToNextTenPages(page);
                 }
 
-                // WARUNEK 3: Brak możliwości nawigacji
+                // WARUNEK ZAKOŃCZENIA 2: Jeśli ŻADNA nawigacja nie powiodła się
                 if (navigationSuccess) {
                     currentPage++;
                 } else {
                     console.log('🏁 No more navigation buttons available. This is the true end of pagination.');
+                    break;
+                }
+                
+                // *** DODATKOWY WARUNEK ZAKOŃCZENIA: Zgodność ze zgromadzoną łączną liczbą (tylko w celach informacyjnych, nie zmienia głównej logiki stopu) ***
+                if (typeof stats.totalVehiclesOnSite === 'number' && stats.vehiclesFound >= stats.totalVehiclesOnSite) {
+                    console.log(`\n🛑 Reached or exceeded the reported total of ${stats.totalVehiclesOnSite} vehicles. Stopping crawl.`);
                     break;
                 }
             }
@@ -366,9 +353,8 @@ console.log('\n' + '='.repeat(50));
 console.log('🎉 Crawling completed!');
 console.log('📊 Final Statistics:', {
     pagesProcessed: stats.pagesProcessed,
-    totalExpected: stats.totalExpected,
     vehiclesFound: stats.vehiclesFound,
-    completeness: stats.totalExpected > 0 ? `${((stats.vehiclesFound/stats.totalExpected)*100).toFixed(1)}%` : 'N/A',
+    totalVehiclesOnSite: stats.totalVehiclesOnSite, // *** ZMIANA: Dodano do statystyk ***
     errors: stats.errors,
     duration: `${Math.round(stats.duration / 1000)}s`,
 });
