@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (v4 - Title Split Logic & Total Count Fix) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (v4 - Title Split Logic & Total Count FIX - REGEX) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -185,30 +185,51 @@ const waitForResults = async (page, timeout = 25000) => {
     }
 };
 
-// *** POPRAWIONA FUNKCJA: Pobieranie łącznej liczby aukcji (lepszy selektor i timeout) ***
+// *** NOWA, NIEZAWODNA FUNKCJA: Pobieranie łącznej liczby aukcji za pomocą Regex ***
 const getTotalAuctionsCount = async (page) => {
-    // Używamy selektora klasy CSS, który jest stabilniejszy i widoczny na obrazku
-    const selector = 'label.label--total';
     try {
-        console.log(`...attempting to find total count using selector: ${selector}`);
-        // Zwiększamy timeout do 10 sekund (było 5)
-        const countElement = await page.waitForSelector(selector, { state: 'attached', timeout: 10000 });
-        const textContent = await countElement.textContent();
+        console.log('...Attempting to extract total count using page content (Regex)...');
         
-        // Usuń przecinki i spróbuj sparsować jako liczbę
-        const count = parseInt(textContent.replace(/,/g, ''), 10);
-        if (isNaN(count)) {
-            console.log(`⚠️ Could not parse total vehicle count from text: ${textContent}`);
-            return 'N/A';
+        // Używamy networkidle, aby upewnić się, że wszystkie żądania AJAX zostały przetworzone
+        await page.waitForLoadState('networkidle', { timeout: 15000 });
+        const content = await page.content();
+        
+        // Najbardziej prawdopodobny Regex, celujący w element label.label--total, ale używający zawartości
+        // Wzorzec: Wyszukuje liczbę (z opcjonalnym przecinkiem) wewnątrz tagu label z klasą 'label--total' lub obok 'VEHICLES'
+        const primaryRegex = /<label[^>]*class="[^"]*label--total[^"]*"[^>]*>([\d,]+)<\/label>/i;
+        let match = content.match(primaryRegex);
+
+        if (match && match[1]) {
+            const rawCount = match[1];
+            const count = parseInt(rawCount.replace(/,/g, ''), 10);
+            
+            if (!isNaN(count)) {
+                 console.log(`✅ Extracted total count using primary Regex (label.label--total): ${count}`);
+                 return count;
+            }
         }
-        return count;
+        
+        // Opcja awaryjna: Szukamy liczby (z opcjonalnym przecinkiem) znajdującej się przed słowem "VEHICLES"
+        const fallbackRegex = /([\d,]+)\s*(?:VEHICLES|TotalAmount|TOTAL)/i;
+        match = content.match(fallbackRegex);
+        
+        if (match && match[1]) {
+             const rawCount = match[1];
+             const count = parseInt(rawCount.replace(/,/g, ''), 10);
+             if (!isNaN(count)) {
+                 console.log(`✅ Extracted total count using fallback Regex (near 'VEHICLES'): ${count}`);
+                 return count;
+             }
+        }
+        
+        console.log(`⚠️ Regex extraction failed. Total count not found in HTML content.`);
+        return 'N/A';
     } catch (error) {
-        // Logujemy błąd z dodatkową informacją o selektorze
-        console.log(`⚠️ Could not find or read total auctions element (${selector}) within timeout. Error: ${error.message}`);
+        console.log(`❌ Error during Regex extraction: ${error.message}`);
         return 'N/A';
     }
 }
-// *** KONIEC POPRAWIONEJ FUNKCJI ***
+// *** KONIEC NOWEJ, NIEZAWODNEJ FUNKCJI ***
 
 
 // --- FUNKCJA DO NAWIGACJI PO STRONACH ---
@@ -281,14 +302,15 @@ const crawler = new PlaywrightCrawler({
     async requestHandler({ page, request }) {
         console.log(`📖 Processing: ${request.url}`);
         try {
-            await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            // Zmieniono na 'domcontentloaded', a następnie używamy 'networkidle' w funkcji Regex
+            await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 }); 
             await handleCookieConsent(page);
             if (!await waitForResults(page)) {
                 console.log('Stopping processing for this URL as no results were found.');
                 return;
             }
             
-            // *** ZMIANA: Sprawdzenie łącznej liczby aukcji za pomocą ulepszonej funkcji ***
+            // *** ZMIANA: Wywołanie funkcji Regex ***
             const totalCount = await getTotalAuctionsCount(page);
             stats.totalVehiclesOnSite = totalCount;
             console.log(`\n🎉 Total auctions found on site: ${totalCount}`);
@@ -296,7 +318,7 @@ const crawler = new PlaywrightCrawler({
 
             let currentPage = 1;
             
-            // ZMIANA: Pętla na nieskończoną, kontrolowana warunkami 'break'
+            // Pętla na nieskończoną, kontrolowana warunkami 'break'
             while (true) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
 
