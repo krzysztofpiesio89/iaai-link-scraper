@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (v4 - Title Split Logic & Total Count FIX - REGEX) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (V6 - Simplified Pagination & REGEX) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -12,23 +12,21 @@ const {
     proxyConfiguration,
     headless = true,
     debugMode = false,
-    // Ustawienie na bardzo dużą wartość, ale główna logika końca będzie w handlerze.
     maxPages = 99999 
 } = input;
 
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
 const dataset = await Dataset.open();
 
-// *** ZMIANA: Dodano pole na łączną liczbę pojazdów ze strony ***
 const stats = { pagesProcessed: 0, vehiclesFound: 0, totalVehiclesOnSite: 'N/A', errors: 0, startTime: new Date() };
 
-// --- FUNKCJA DO EKSTRAKCJI DANYCH (z logiką rozdzielającą tytuł i datą aukcji) ---
+// --- FUNKCJA DO EKSTRAKCJI DANYCH (pozostaje bez zmian) ---
 const extractVehicleDataFromList = async (page) => {
     return page.evaluate(() => {
         const results = [];
         document.querySelectorAll('div.table-row.table-row-border').forEach(row => {
             try {
-                // --- Funkcje pomocnicze do pobierania tekstu ---
+                // ... (reszta logiki ekstrakcji)
                 const getTextByTitle = (prefix) => {
                     const element = row.querySelector(`span[title^="${prefix}"]`);
                     return element ? element.textContent.trim() : null;
@@ -39,7 +37,6 @@ const extractVehicleDataFromList = async (page) => {
                     return element ? element.textContent.trim() : null;
                 };
 
-                // --- Podstawowe informacje ---
                 const linkElement = row.querySelector('h4.heading-7 a');
                 if (!linkElement) return;
 
@@ -47,7 +44,6 @@ const extractVehicleDataFromList = async (page) => {
                 const fullTitle = linkElement.textContent.trim();
                 const imageUrl = row.querySelector('.table-cell--image img')?.getAttribute('data-src') || row.querySelector('.table-cell--image img')?.getAttribute('src');
 
-                // --- LOGIKA: Rozdzielanie tytułu na rok, markę, model i wersję ---
                 const yearMatch = fullTitle.match(/^\d{4}/);
                 const year = yearMatch ? yearMatch[0] : null;
 
@@ -62,9 +58,7 @@ const extractVehicleDataFromList = async (page) => {
                     model = parts.shift() || null;
                     version = parts.join(' ').trim();
                 }
-                // --- KONIEC LOGIKI ---
 
-                // --- Ekstrakcja pozostałych danych ---
                 let stock = null;
                 let vin = null;
                 
@@ -110,7 +104,6 @@ const extractVehicleDataFromList = async (page) => {
                     }
                 });
                 
-                // Pobieranie daty aukcji
                 const auctionDate = getText('.data-list__value--action');
                 const is360 = !!row.querySelector('span.media_360_view');
                 const videoUrl = stock ? `https://mediastorageaccountprod.blob.core.windows.net/media/${stock}_VES-100_1` : null;
@@ -145,7 +138,8 @@ const extractVehicleDataFromList = async (page) => {
     });
 };
 
-// *** FUNKCJA POMOCNICZA DO CZEKANIA NA ZNIKNIĘCIE LOADERA ***
+// --- FUNKCJE POMOCNICZE (pozostają bez zmian) ---
+
 const waitForLoaderToDisappear = async (page, timeout = 20000) => {
     try {
         console.log('...waiting for page loader to disappear...');
@@ -171,7 +165,6 @@ const handleCookieConsent = async (page) => {
     return false;
 };
 
-// --- FUNKCJA CZEKAJĄCA NA ZAŁADOWANIE WYNIKÓW ---
 const waitForResults = async (page, timeout = 25000) => {
     console.log('⏳ Waiting for search results to load...');
     try {
@@ -185,17 +178,14 @@ const waitForResults = async (page, timeout = 25000) => {
     }
 };
 
-// *** NOWA, NIEZAWODNA FUNKCJA: Pobieranie łącznej liczby aukcji za pomocą Regex ***
+// *** FUNKCJA REGEX (pozostaje bez zmian - najlepsza metoda) ***
 const getTotalAuctionsCount = async (page) => {
     try {
         console.log('...Attempting to extract total count using page content (Regex)...');
         
-        // Używamy networkidle, aby upewnić się, że wszystkie żądania AJAX zostały przetworzone
         await page.waitForLoadState('networkidle', { timeout: 15000 });
         const content = await page.content();
         
-        // Najbardziej prawdopodobny Regex, celujący w element label.label--total, ale używający zawartości
-        // Wzorzec: Wyszukuje liczbę (z opcjonalnym przecinkiem) wewnątrz tagu label z klasą 'label--total' lub obok 'VEHICLES'
         const primaryRegex = /<label[^>]*class="[^"]*label--total[^"]*"[^>]*>([\d,]+)<\/label>/i;
         let match = content.match(primaryRegex);
 
@@ -209,7 +199,6 @@ const getTotalAuctionsCount = async (page) => {
             }
         }
         
-        // Opcja awaryjna: Szukamy liczby (z opcjonalnym przecinkiem) znajdującej się przed słowem "VEHICLES"
         const fallbackRegex = /([\d,]+)\s*(?:VEHICLES|TotalAmount|TOTAL)/i;
         match = content.match(fallbackRegex);
         
@@ -229,10 +218,10 @@ const getTotalAuctionsCount = async (page) => {
         return 'N/A';
     }
 }
-// *** KONIEC NOWEJ, NIEZAWODNEJ FUNKCJI ***
+// *** KONIEC FUNKCJI REGEX ***
 
 
-// --- FUNKCJA DO NAWIGACJI PO STRONACH ---
+// --- FUNKCJA DO NAWIGACJI PO STRONACH (pozostaje bez zmian) ---
 const navigateToPageNumber = async (page, pageNumber) => {
     try {
         const pageButtonSelector = `button#PageNumber${pageNumber}`;
@@ -240,7 +229,6 @@ const navigateToPageNumber = async (page, pageNumber) => {
         if (await pageButton.count() > 0 && await pageButton.isEnabled()) {
             console.log(`🔢 Clicking page number button: ${pageNumber}`);
             
-            // KLUCZOWE: Używamy unikalnego elementu do czekania na odświeżenie
             const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
             const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
             
@@ -258,39 +246,11 @@ const navigateToPageNumber = async (page, pageNumber) => {
         }
         return false;
     } catch (error) {
-        // Ignorujemy błędy, jeśli przycisk zniknął (np. osiągnięto koniec paginacji)
         return false; 
     }
 };
 
-// --- FUNKCJA DO NAWIGACJI DO NASTĘPNYCH 10 STRON ---
-const navigateToNextTenPages = async (page) => {
-    try {
-        const nextTenButton = page.locator('button.btn-next-10');
-        if (await nextTenButton.count() > 0 && await nextTenButton.isEnabled()) {
-            console.log('⏭️ Clicking "Next 10 Pages"...');
-            
-            // KLUCZOWE: Używamy unikalnego elementu do czekania na odświeżenie
-            const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
-            const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
-
-            await waitForLoaderToDisappear(page);
-            await nextTenButton.click();
-            
-            console.log(`⏳ Waiting for content to update...`);
-            await page.waitForFunction((expectedOldHref) => {
-                const currentFirstLink = document.querySelector('a[href^="/VehicleDetail/"]');
-                return currentFirstLink && currentFirstLink.getAttribute('href') !== expectedOldHref;
-            }, hrefBeforeClick, { timeout: 20000 });
-            console.log('✅ Successfully navigated to the next set of pages.');
-            return true;
-        }
-        return false;
-    } catch (error) {
-        // Ignorujemy błędy, jeśli przycisk zniknął (np. osiągnięto koniec paginacji)
-        return false;
-    }
-};
+// *** USUWAMY NIEZARLODNĄ FUNKCJĘ navigateToNextTenPages ***
 
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
@@ -302,7 +262,6 @@ const crawler = new PlaywrightCrawler({
     async requestHandler({ page, request }) {
         console.log(`📖 Processing: ${request.url}`);
         try {
-            // Zmieniono na 'domcontentloaded', a następnie używamy 'networkidle' w funkcji Regex
             await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 }); 
             await handleCookieConsent(page);
             if (!await waitForResults(page)) {
@@ -310,15 +269,13 @@ const crawler = new PlaywrightCrawler({
                 return;
             }
             
-            // *** ZMIANA: Wywołanie funkcji Regex ***
+            // Pobieramy łączną liczbę aukcji
             const totalCount = await getTotalAuctionsCount(page);
             stats.totalVehiclesOnSite = totalCount;
             console.log(`\n🎉 Total auctions found on site: ${totalCount}`);
-            // *** KONIEC ZMIANY ***
 
             let currentPage = 1;
             
-            // Pętla na nieskończoną, kontrolowana warunkami 'break'
             while (true) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
 
@@ -337,23 +294,19 @@ const crawler = new PlaywrightCrawler({
 
                 // --- LOGIKA NAWIGACJI ---
                 const nextPageNumber = currentPage + 1;
+                // Zamiast skomplikowanej logiki Next 10, próbujemy przejść tylko do kolejnego numeru
                 let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
-
-                if (!navigationSuccess) {
-                    // Jeśli nie udało się kliknąć przycisku numerycznego, spróbuj przycisku "Next 10"
-                    console.log(`🔢 Button for page ${nextPageNumber} not found. Attempting to jump to the next 10 pages.`);
-                    navigationSuccess = await navigateToNextTenPages(page);
-                }
 
                 // WARUNEK ZAKOŃCZENIA 2: Jeśli ŻADNA nawigacja nie powiodła się
                 if (navigationSuccess) {
                     currentPage++;
                 } else {
-                    console.log('🏁 No more navigation buttons available. This is the true end of pagination.');
+                    // W tym miejscu wiemy, że osiągnęliśmy koniec paginacji
+                    console.log('🏁 No more navigation buttons available (or page number button not active). End of pagination.');
                     break;
                 }
                 
-                // *** DODATKOWY WARUNEK ZAKOŃCZENIA: Zgodność ze zgromadzoną łączną liczbą ***
+                // *** DODATKOWY WARUNEK ZAKOŃCZENIA (pomocniczy) ***
                 if (typeof stats.totalVehiclesOnSite === 'number' && stats.vehiclesFound >= stats.totalVehiclesOnSite) {
                     console.log(`\n🛑 Reached or exceeded the reported total of ${stats.totalVehiclesOnSite} vehicles. Stopping crawl.`);
                     break;
