@@ -1,8 +1,9 @@
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
+import { prisma, testConnection, upsertCar, closeDatabase, getStats } from './prisma.js';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (V6 - Simplified Pagination & REGEX) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (V6 - Prisma Integration) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -18,15 +19,34 @@ const {
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
 const dataset = await Dataset.open();
 
-const stats = { pagesProcessed: 0, vehiclesFound: 0, totalVehiclesOnSite: 'N/A', errors: 0, startTime: new Date() };
+console.log('🔗 Testing database connection...');
+const dbConnected = await testConnection();
+if (!dbConnected) {
+    console.error('❌ Database connection failed. Please check your DATABASE_URL environment variable.');
+    await Actor.exit();
+}
 
-// --- FUNKCJA DO EKSTRAKCJI DANYCH (pozostaje bez zmian) ---
+console.log('📊 Initial database statistics:');
+const initialStats = await getStats();
+console.log(`   Total cars in database: ${initialStats.totalCars}`);
+console.log(`   Recent cars: ${initialStats.recentCars.length} added in last session`);
+
+const stats = { 
+    pagesProcessed: 0, 
+    vehiclesFound: 0, 
+    totalVehiclesOnSite: 'N/A', 
+    errors: 0, 
+    startTime: new Date(),
+    dbSaved: 0,
+    dbErrors: 0
+};
+
+// --- FUNKCJA DO EKSTRAKCJI DANYCH ---
 const extractVehicleDataFromList = async (page) => {
     return page.evaluate(() => {
         const results = [];
         document.querySelectorAll('div.table-row.table-row-border').forEach(row => {
             try {
-                // ... (reszta logiki ekstrakcji)
                 const getTextByTitle = (prefix) => {
                     const element = row.querySelector(`span[title^="${prefix}"]`);
                     return element ? element.textContent.trim() : null;
@@ -45,14 +65,14 @@ const extractVehicleDataFromList = async (page) => {
                 const imageUrl = row.querySelector('.table-cell--image img')?.getAttribute('data-src') || row.querySelector('.table-cell--image img')?.getAttribute('src');
 
                 const yearMatch = fullTitle.match(/^\d{4}/);
-                const year = yearMatch ? yearMatch[0] : null;
+                const year = yearMatch ? parseInt(yearMatch[0]) : null;
 
                 let make = null;
                 let model = null;
                 let version = null;
 
                 if (year) {
-                    const restOfTitle = fullTitle.substring(year.length).trim();
+                    const restOfTitle = fullTitle.substring(year.toString().length).trim();
                     const parts = restOfTitle.split(' ');
                     make = parts.shift() || null; 
                     model = parts.shift() || null;
@@ -82,11 +102,13 @@ const extractVehicleDataFromList = async (page) => {
                 const damageType = damageParts.length > 0 ? damageParts.join(' / ') : "";
                 
                 const mileage = getTextByTitle("Odometer:");
+                const mileageNum = mileage ? parseInt(mileage.replace(/,/g, '')) : null;
+                
                 const engineInfo = getTextByTitle("Engine:");
                 const fuelType = getTextByTitle("Fuel Type:");
                 const cylinders = getTextByTitle("Cylinder:");
                 const origin = getText('span[title^="Branch:"] a');
-                const engineStatus = getText('.badge');
+                const engineStatus = getText('.badge') || 'Unknown';
                 
                 let bidPrice = getText('.btn--pre-bid') || getText('[data-testid="current-bid-price"]');
                 const acvValue = getTextByTitle("ACV:");
@@ -94,6 +116,8 @@ const extractVehicleDataFromList = async (page) => {
                 if (bidPrice && bidPrice.trim().toLowerCase() === 'pre-bid' && acvValue) {
                     bidPrice = acvValue.trim();
                 }
+                
+                const bidPriceNum = bidPrice ? parseFloat(bidPrice.replace(/[$,]/g, '')) : 0;
                 
                 let buyNowPrice = null;
                 const actionLinks = row.querySelectorAll('.data-list--action a');
@@ -103,6 +127,8 @@ const extractVehicleDataFromList = async (page) => {
                         buyNowPrice = linkText.replace('Buy Now ', '');
                     }
                 });
+                
+                const buyNowPriceNum = buyNowPrice ? parseFloat(buyNowPrice.replace(/[$,]/g, '')) : null;
                 
                 const auctionDate = getText('.data-list__value--action');
                 const is360 = !!row.querySelector('span.media_360_view');
@@ -117,15 +143,15 @@ const extractVehicleDataFromList = async (page) => {
                     auctionDate,
                     is360,
                     damageType,
-                    mileage,
+                    mileage: mileageNum,
                     engineStatus,
                     origin,
                     vin,
                     engineInfo,
                     fuelType,
                     cylinders,
-                    bidPrice,
-                    buyNowPrice,
+                    bidPrice: bidPriceNum,
+                    buyNowPrice: buyNowPriceNum,
                     videoUrl,
                     detailUrl,
                     imageUrl,
@@ -138,7 +164,7 @@ const extractVehicleDataFromList = async (page) => {
     });
 };
 
-// --- FUNKCJE POMOCNICZE (pozostają bez zmian) ---
+// --- FUNKCJE POMOCNICZE ---
 
 const waitForLoaderToDisappear = async (page, timeout = 20000) => {
     try {
@@ -178,7 +204,6 @@ const waitForResults = async (page, timeout = 25000) => {
     }
 };
 
-// *** FUNKCJA REGEX (pozostaje bez zmian - najlepsza metoda) ***
 const getTotalAuctionsCount = async (page) => {
     try {
         console.log('...Attempting to extract total count using page content (Regex)...');
@@ -217,11 +242,9 @@ const getTotalAuctionsCount = async (page) => {
         console.log(`❌ Error during Regex extraction: ${error.message}`);
         return 'N/A';
     }
-}
-// *** KONIEC FUNKCJI REGEX ***
+};
 
-
-// --- FUNKCJA DO NAWIGACJI PO STRONACH (pozostaje bez zmian) ---
+// --- FUNKCJA DO NAWIGACJI PO STRONACH ---
 const navigateToPageNumber = async (page, pageNumber) => {
     try {
         const pageButtonSelector = `button#PageNumber${pageNumber}`;
@@ -250,7 +273,58 @@ const navigateToPageNumber = async (page, pageNumber) => {
     }
 };
 
-// *** USUWAMY NIEZARLODNĄ FUNKCJĘ navigateToNextTenPages ***
+// --- FUNKCJA DO ZAPISYWANIA DO BAZY DANYCH ---
+const saveVehiclesToDatabase = async (vehiclesData) => {
+    let savedCount = 0;
+    let errorCount = 0;
+    
+    for (const vehicle of vehiclesData) {
+        try {
+            // Skip if stock number is missing (required field)
+            if (!vehicle.stock) {
+                console.log(`⚠️ Skipping vehicle without stock number`);
+                continue;
+            }
+            
+            // Convert data types to match Prisma schema
+            const carData = {
+                stock: vehicle.stock,
+                year: vehicle.year || 2020,
+                make: vehicle.make || 'Unknown',
+                model: vehicle.model || 'Unknown',
+                damageType: vehicle.damageType || '',
+                mileage: vehicle.mileage || null,
+                engineStatus: vehicle.engineStatus || 'Unknown',
+                bidPrice: vehicle.bidPrice || 0,
+                buyNowPrice: vehicle.buyNowPrice || null,
+                auctionDate: vehicle.auctionDate ? new Date(vehicle.auctionDate) : null,
+                detailUrl: vehicle.detailUrl || '',
+                imageUrl: vehicle.imageUrl || '',
+                version: vehicle.version || null,
+                origin: vehicle.origin || null,
+                vin: vehicle.vin || null,
+                engineInfo: vehicle.engineInfo || null,
+                fuelType: vehicle.fuelType || null,
+                cylinders: vehicle.cylinders || null,
+                videoUrl: vehicle.videoUrl || null,
+                is360: vehicle.is360 || false,
+            };
+            
+            await upsertCar(carData);
+            savedCount++;
+            
+            if (savedCount % 10 === 0) {
+                console.log(`💾 Saved ${savedCount} vehicles to database so far...`);
+            }
+            
+        } catch (error) {
+            errorCount++;
+            console.error(`❌ Error saving vehicle ${vehicle.stock}:`, error.message);
+        }
+    }
+    
+    return { saved: savedCount, errors: errorCount };
+};
 
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
@@ -289,19 +363,24 @@ const crawler = new PlaywrightCrawler({
                 }
                 
                 stats.vehiclesFound += vehiclesData.length;
-                await dataset.pushData(vehiclesData);
+                
+                // ZAPISYWANIE DO BAZY DANYCH
+                console.log('💾 Saving vehicles to database...');
+                const { saved, errors } = await saveVehiclesToDatabase(vehiclesData);
+                stats.dbSaved += saved;
+                stats.dbErrors += errors;
+                
+                await dataset.pushData(vehiclesData); // Keep original dataset for compatibility
                 stats.pagesProcessed = currentPage;
 
                 // --- LOGIKA NAWIGACJI ---
                 const nextPageNumber = currentPage + 1;
-                // Zamiast skomplikowanej logiki Next 10, próbujemy przejść tylko do kolejnego numeru
                 let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
 
                 // WARUNEK ZAKOŃCZENIA 2: Jeśli ŻADNA nawigacja nie powiodła się
                 if (navigationSuccess) {
                     currentPage++;
                 } else {
-                    // W tym miejscu wiemy, że osiągnęliśmy koniec paginacji
                     console.log('🏁 No more navigation buttons available (or page number button not active). End of pagination.');
                     break;
                 }
@@ -329,6 +408,7 @@ await crawler.run();
 
 stats.endTime = new Date();
 stats.duration = (stats.endTime - stats.startTime);
+
 console.log('\n' + '='.repeat(50));
 console.log('🎉 Crawling completed!');
 console.log('📊 Final Statistics:', {
@@ -336,8 +416,20 @@ console.log('📊 Final Statistics:', {
     vehiclesFound: stats.vehiclesFound,
     totalVehiclesOnSite: stats.totalVehiclesOnSite, 
     errors: stats.errors,
+    dbSaved: stats.dbSaved,
+    dbErrors: stats.dbErrors,
     duration: `${Math.round(stats.duration / 1000)}s`,
 });
+
+console.log('\n📊 Final Database Statistics:');
+const finalStats = await getStats();
+console.log(`   Total cars in database: ${finalStats.totalCars}`);
+console.log(`   Cars added this session: ${stats.dbSaved}`);
+
 console.log('='.repeat(50));
+
+// Close database connection
+await closeDatabase();
+console.log('🔒 Database connection closed.');
 
 await Actor.exit();

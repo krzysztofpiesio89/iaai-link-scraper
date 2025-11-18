@@ -1,0 +1,74 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql" // or "mysql", "sqlite", "sqlserver" based on your setup
+  url      = env("DATABASE_URL")
+}
+
+model Car {
+  id                    Int                      @id @default(autoincrement())
+  stock                 String                   @unique
+  year                  Int
+  make                  String
+  model                 String
+  damageType            String
+  mileage               Int?
+  engineStatus          String
+  bidPrice              Float
+  buyNowPrice           Float?
+  auctionDate           DateTime?
+  detailUrl             String
+  imageUrl              String
+  version               String?
+  origin                String?
+  vin                   String?
+  engineInfo            String?
+  fuelType              String?
+  cylinders             String?
+  videoUrl              String?
+  is360                 Boolean?                 @default(false)
+  engineCapacityL       Float?
+  cylinderArrangement   String?
+  injectionType         String?
+  camshaftType          String?
+  valveTiming           String?
+  isTurbo               Boolean?
+  horsepower            Int?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+
+  // Relations
+  auctionParticipations AuctionParticipation[]
+  favorites             Favorite[]
+
+  @@map("cars")
+}
+
+model AuctionParticipation {
+  id        Int      @id @default(autoincrement())
+  carId     Int
+  bidAmount Float?
+  status    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  car Car @relation(fields: [carId], references: [id], onDelete: Cascade)
+
+  @@map("auction_participations")
+}
+
+model Favorite {
+  id        Int      @id @default(autoincrement())
+  carId     Int
+  userId    String?
+  createdAt DateTime @default(now())
+
+  car Car @relation(fields: [carId], references: [id], onDelete: Cascade)
+
+  @@map("favorites")
+}
