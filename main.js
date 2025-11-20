@@ -30,6 +30,7 @@ if (!dbConnected) {
     console.log('   DATABASE_POSTGRES_URL');
     console.log('   DATABASE_PRISMA_DATABASE_URL');
     console.log('   DATABASE_DATABASE_URL');
+    console.log('\n💡 Make sure to run "npx prisma generate" after setting up your environment.');
     await Actor.exit();
 }
 
