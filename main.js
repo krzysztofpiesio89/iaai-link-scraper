@@ -174,6 +174,71 @@ const extractVehicleDataFromList = async (page) => {
 
 // --- FUNKCJE POMOCNICZE ---
 
+const parseDate = (dateString) => {
+    if (!dateString || typeof dateString !== 'string') return null;
+    
+    // Clean up the date string
+    const cleaned = dateString.trim();
+    
+    // Try direct parsing first
+    const directDate = new Date(cleaned);
+    if (!isNaN(directDate.getTime())) {
+        return directDate;
+    }
+    
+    // Common date patterns from IAAI
+    const patterns = [
+        // MM/DD/YYYY, M/D/YYYY, MM/D/YYYY
+        /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/,
+        // MM/DD/YY, M/D/YY
+        /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/,
+        // DD-MM-YYYY
+        /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/,
+        // YYYY-MM-DD
+        /^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/,
+        // MM DD YYYY
+        /^(\d{1,2})\s+(\d{1,2})\s+(\d{4})$/,
+    ];
+    
+    // Try each pattern
+    for (const pattern of patterns) {
+        const match = cleaned.match(pattern);
+        if (match) {
+            let day, month, year;
+            
+            // MM/DD/YYYY or DD/MM/YYYY format
+            if (pattern.source.includes('4')) { // 4-digit year
+                if (cleaned.match(/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$/)) {
+                    // YYYY-MM-DD format
+                    year = parseInt(match[1]);
+                    month = parseInt(match[2]);
+                    day = parseInt(match[3]);
+                } else {
+                    // Assume MM/DD/YYYY format (most common in US)
+                    month = parseInt(match[1]);
+                    day = parseInt(match[2]);
+                    year = parseInt(match[3]);
+                }
+            } else { // 2-digit year
+                month = parseInt(match[1]);
+                day = parseInt(match[2]);
+                year = parseInt(match[3]) + 2000; // Assume 20xx
+            }
+            
+            // Validate the date
+            if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && year >= 2000 && year <= 2030) {
+                const date = new Date(year, month - 1, day);
+                if (date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day) {
+                    return date;
+                }
+            }
+        }
+    }
+    
+    console.log(`⚠️ Could not parse date: "${dateString}"`);
+    return null;
+};
+
 const waitForLoaderToDisappear = async (page, timeout = 20000) => {
     try {
         console.log('...waiting for page loader to disappear...');
@@ -294,6 +359,17 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
                 continue;
             }
             
+            // Parse auction date with proper error handling
+            let parsedAuctionDate = null;
+            if (vehicle.auctionDate) {
+                const parsedDate = parseDate(vehicle.auctionDate);
+                if (parsedDate && !isNaN(parsedDate.getTime())) {
+                    parsedAuctionDate = parsedDate;
+                } else {
+                    console.log(`⚠️ Invalid auction date for vehicle ${vehicle.stock}: "${vehicle.auctionDate}"`);
+                }
+            }
+            
             // Convert data types to match Prisma schema
             const carData = {
                 stock: vehicle.stock,
@@ -305,7 +381,7 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
                 engineStatus: vehicle.engineStatus || 'Unknown',
                 bidPrice: vehicle.bidPrice || 0,
                 buyNowPrice: vehicle.buyNowPrice || null,
-                auctionDate: vehicle.auctionDate ? new Date(vehicle.auctionDate) : null,
+                auctionDate: parsedAuctionDate,
                 detailUrl: vehicle.detailUrl || '',
                 imageUrl: vehicle.imageUrl || '',
                 version: vehicle.version || null,
