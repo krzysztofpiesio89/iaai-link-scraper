@@ -3,7 +3,7 @@ import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { prisma, testConnection, upsertCar, closeDatabase, getStats, showConnectionInfo } from './prisma.js';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (V7 - Prisma + Fixed Pagination) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (V8 - Pagination Fix) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -25,12 +25,7 @@ showConnectionInfo();
 console.log('\n🔗 Testing database connection...');
 const dbConnected = await testConnection();
 if (!dbConnected) {
-    console.error('❌ Database connection failed. Please check your environment variables:');
-    console.log('   DATABASE_URL');
-    console.log('   DATABASE_POSTGRES_URL');
-    console.log('   DATABASE_PRISMA_DATABASE_URL');
-    console.log('   DATABASE_DATABASE_URL');
-    console.log('\n💡 Make sure to run "npx prisma generate" after setting up your environment.');
+    console.error('❌ Database connection failed. Please check your environment variables.');
     await Actor.exit();
 }
 
@@ -176,209 +171,126 @@ const extractVehicleDataFromList = async (page) => {
 
 const parseDate = (dateString) => {
     if (!dateString || typeof dateString !== 'string') return null;
-    
     const cleaned = dateString.trim();
-    
     const directDate = new Date(cleaned);
-    if (!isNaN(directDate.getTime())) {
-        return directDate;
+    if (!isNaN(directDate.getTime())) return directDate;
+    
+    // Uproszczone parsowanie dat
+    const match = cleaned.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (match) {
+        const m = parseInt(match[1]);
+        const d = parseInt(match[2]);
+        const y = parseInt(match[3]);
+        if (m > 0 && d > 0 && y > 2000) return new Date(y, m - 1, d);
     }
-    
-    const patterns = [
-        /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/,
-        /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/,
-        /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/,
-        /^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/,
-        /^(\d{1,2})\s+(\d{1,2})\s+(\d{4})$/,
-    ];
-    
-    for (const pattern of patterns) {
-        const match = cleaned.match(pattern);
-        if (match) {
-            let day, month, year;
-            
-            if (pattern.source.includes('4')) {
-                if (cleaned.match(/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$/)) {
-                    year = parseInt(match[1]);
-                    month = parseInt(match[2]);
-                    day = parseInt(match[3]);
-                } else {
-                    month = parseInt(match[1]);
-                    day = parseInt(match[2]);
-                    year = parseInt(match[3]);
-                }
-            } else {
-                month = parseInt(match[1]);
-                day = parseInt(match[2]);
-                year = parseInt(match[3]) + 2000;
-            }
-            
-            if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && year >= 2000 && year <= 2030) {
-                const date = new Date(year, month - 1, day);
-                if (date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day) {
-                    return date;
-                }
-            }
-        }
-    }
-    
-    console.log(`⚠️ Could not parse date: "${dateString}"`);
     return null;
 };
 
-const waitForLoaderToDisappear = async (page, timeout = 20000) => {
+const waitForLoaderToDisappear = async (page, timeout = 25000) => {
     try {
-        console.log('...waiting for page loader to disappear...');
+        // Czekamy na główny loader
         await page.waitForSelector('.circle-loader-shape', { state: 'hidden', timeout });
-        console.log('✅ Loader disappeared.');
+        // Czekamy też na ewentualny overlay blokujący (częste przy paginacji AJAX)
+        await page.waitForSelector('.blockUI.blockOverlay', { state: 'hidden', timeout: 5000 }).catch(() => {});
     } catch (e) {
-        console.log('⚠️ Loader did not disappear in time, but continuing anyway.');
+        console.log('⚠️ Loader wait warning (continuing).');
     }
 };
 
 const handleCookieConsent = async (page) => {
     try {
-        const cookieSelectors = ['#truste-consent-button'];
-        for (const selector of cookieSelectors) {
-            const button = page.locator(selector).first();
-            if (await button.isVisible({ timeout: 2000 })) {
-                console.log('🍪 Accepting cookie consent...');
-                await button.click();
-                return true;
-            }
+        const button = page.locator('#truste-consent-button').first();
+        if (await button.isVisible({ timeout: 3000 })) {
+            await button.click();
         }
     } catch (error) { /* Ignore */ }
-    return false;
 };
 
-const waitForResults = async (page, timeout = 25000) => {
-    console.log('⏳ Waiting for search results to load...');
+const waitForResults = async (page, timeout = 30000) => {
     try {
-        await page.waitForSelector('a[href^="/VehicleDetail/"]', { timeout });
+        await page.waitForSelector('div.table-body', { timeout });
         await waitForLoaderToDisappear(page);
-        console.log('✅ Vehicle detail links found and page is ready.');
         return true;
     } catch (e) {
-        console.log(`⚠️ No vehicle links found within ${timeout}ms timeout.`);
+        console.log(`⚠️ No results table found.`);
         return false;
     }
 };
 
 const getTotalAuctionsCount = async (page) => {
     try {
-        console.log('...Attempting to extract total count using page content (Regex)...');
-        
-        await page.waitForLoadState('networkidle', { timeout: 15000 });
         const content = await page.content();
-        
-        const primaryRegex = /<label[^>]*class="[^"]*label--total[^"]*"[^>]*>([\d,]+)<\/label>/i;
-        let match = content.match(primaryRegex);
-
-        if (match && match[1]) {
-            const rawCount = match[1];
-            const count = parseInt(rawCount.replace(/,/g, ''), 10);
-            
-            if (!isNaN(count)) {
-                 console.log(`✅ Extracted total count using primary Regex (label.label--total): ${count}`);
-                 return count;
-            }
-        }
-        
-        const fallbackRegex = /([\d,]+)\s*(?:VEHICLES|TotalAmount|TOTAL)/i;
-        match = content.match(fallbackRegex);
-        
-        if (match && match[1]) {
-             const rawCount = match[1];
-             const count = parseInt(rawCount.replace(/,/g, ''), 10);
-             if (!isNaN(count)) {
-                 console.log(`✅ Extracted total count using fallback Regex (near 'VEHICLES'): ${count}`);
-                 return count;
-             }
-        }
-        
-        console.log(`⚠️ Regex extraction failed. Total count not found in HTML content.`);
+        const match = content.match(/<label[^>]*class="[^"]*label--total[^"]*"[^>]*>([\d,]+)<\/label>/i);
+        if (match && match[1]) return parseInt(match[1].replace(/,/g, ''), 10);
         return 'N/A';
-    } catch (error) {
-        console.log(`❌ Error during Regex extraction: ${error.message}`);
-        return 'N/A';
-    }
+    } catch (e) { return 'N/A'; }
 };
 
-// --- ULEPSZONA FUNKCJA DO NAWIGACJI PO STRONACH ---
-const navigateToPageNumber = async (page, pageNumber) => {
+// --- NAPRAWIONA FUNKCJA DO NAWIGACJI PO STRONACH ---
+const navigateToPageNumber = async (page, targetPageNumber) => {
     try {
         await waitForLoaderToDisappear(page);
         
-        const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
-        const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
+        console.log(`🔢 Attempting to navigate to page ${targetPageNumber}`);
         
-        console.log(`🔢 Attempting to navigate to page ${pageNumber}`);
-        
-        // STRATEGIA 1: Przycisk z numerem strony (PageNumber{X})
-        let pageButton = page.locator(`button#PageNumber${pageNumber}`);
-        if (await pageButton.count() > 0) {
-            const isVisible = await pageButton.isVisible({ timeout: 2000 }).catch(() => false);
-            const isEnabled = await pageButton.isEnabled({ timeout: 1000 }).catch(() => false);
-            if (isVisible && isEnabled) {
-                console.log(`✅ Clicking page number button: ${pageNumber}`);
-                await pageButton.click();
-                await page.waitForTimeout(1500);
-                await waitForLoaderToDisappear(page);
-                return true;
-            }
+        // STRATEGIA 1: Bezpośredni przycisk numeru strony (jeśli jest widoczny)
+        // Np. przycisk "91" jeśli właśnie załadowaliśmy nowy blok
+        const specificPageBtn = page.locator(`button#PageNumber${targetPageNumber}`);
+        if (await specificPageBtn.isVisible({ timeout: 1000 }) && await specificPageBtn.isEnabled()) {
+            console.log(`✅ Clicking direct page button: ${targetPageNumber}`);
+            await specificPageBtn.click();
+            await waitForLoaderToDisappear(page);
+            return true;
+        }
+
+        // STRATEGIA 2: Obsługa "kolejnej dziesiątki" (Next 10 Pages)
+        // To naprawia problem przy stronie 90, 100 itd.
+        // Szukamy przycisku, który ma klasę btn-next-10
+        const nextTenBtn = page.locator('button.btn-next-10').first();
+        const isNextTenVisible = await nextTenBtn.isVisible().catch(() => false);
+        const isNextTenEnabled = await nextTenBtn.isEnabled().catch(() => false);
+
+        // Sprawdź, czy bezpośredni numer strony NIE istnieje, ale przycisk "Next 10" istnieje.
+        // Jest to kluczowe w momencie przejścia np. z 90 na 91.
+        if (!await specificPageBtn.isVisible() && isNextTenVisible && isNextTenEnabled) {
+             console.log(`⏭️ Direct button missing. Clicking "Next 10 Pages" (btn-next-10) to load next block...`);
+             await nextTenBtn.click();
+             
+             // Po kliknięciu "Next 10" musimy poczekać, aż pojawi się nowy blok numerów
+             await page.waitForTimeout(2000); // Krótka pauza na start requestu
+             await waitForLoaderToDisappear(page);
+             
+             // Po przeładowaniu bloku, musimy kliknąć konkretny numer, jeśli nie jesteśmy na nim automatycznie
+             // Często IAAI po kliknięciu Next 10 ustawia aktywną pierwszą stronę z nowej dziesiątki (np. 91),
+             // ale dla pewności sprawdzamy.
+             const newSpecificBtn = page.locator(`button#PageNumber${targetPageNumber}`);
+             if (await newSpecificBtn.isVisible()) {
+                 // Sprawdź, czy nie jest już aktywny
+                 const classAttr = await newSpecificBtn.getAttribute('class');
+                 if (!classAttr.includes('active')) {
+                     console.log(`   Clicking newly appeared button ${targetPageNumber}`);
+                     await newSpecificBtn.click();
+                     await waitForLoaderToDisappear(page);
+                 }
+             }
+             return true;
+        }
+
+        // STRATEGIA 3: Zwykły przycisk "Next" (btn-next)
+        // Używamy go jako fallback, jeśli nie jesteśmy na granicy dziesiątek
+        const nextButton = page.locator('button.btn-next').first();
+        if (await nextButton.isVisible() && await nextButton.isEnabled()) {
+            console.log(`➡️ Clicking Standard Next button`);
+            await nextButton.click();
+            await waitForLoaderToDisappear(page);
+            return true;
         }
         
-        // STRATEGIA 2: Przycisk "Dalej" (btn-next)
-        const nextButton = page.locator('button.btn-next');
-        if (await nextButton.count() > 0) {
-            const isVisible = await nextButton.isVisible({ timeout: 2000 }).catch(() => false);
-            const isEnabled = await nextButton.isEnabled({ timeout: 1000 }).catch(() => false);
-            if (isVisible && isEnabled) {
-                console.log(`➡️ Clicking Next button (btn-next)`);
-                await nextButton.click();
-                await page.waitForTimeout(1500);
-                await waitForLoaderToDisappear(page);
-                return true;
-            }
-        }
-        
-        // STRATEGIA 3: Przycisk "+10 stron" (btn-next-10)
-        const next10Button = page.locator('button.btn-next-10');
-        if (await next10Button.count() > 0) {
-            const isVisible = await next10Button.isVisible({ timeout: 2000 }).catch(() => false);
-            const isEnabled = await next10Button.isEnabled({ timeout: 1000 }).catch(() => false);
-            if (isVisible && isEnabled) {
-                console.log(`⏭️ Clicking Next 10 Pages button (btn-next-10)`);
-                await next10Button.click();
-                await page.waitForTimeout(1500);
-                await waitForLoaderToDisappear(page);
-                return true;
-            }
-        }
-        
-        console.log(`⚠️ Could not find active navigation button for page ${pageNumber}`);
-        
-        // DEBUGOWANIE: Wyświetl dostępne przyciski paginacji
-        if (debugMode) {
-            console.log('📋 Available pagination buttons:');
-            const paginationButtons = await page.locator('button[class*="btn"]').all();
-            for (let i = 0; i < Math.min(paginationButtons.length, 20); i++) {
-                try {
-                    const text = await paginationButtons[i].textContent({ timeout: 500 }).catch(() => '');
-                    const className = await paginationButtons[i].getAttribute('class').catch(() => '');
-                    const isEnabled = await paginationButtons[i].isEnabled({ timeout: 500 }).catch(() => false);
-                    if (className.includes('btn')) {
-                        console.log(`   [${isEnabled ? '✓' : '✗'}] ${className} - "${text.trim()}"`);
-                    }
-                } catch (e) {
-                    // Ignore
-                }
-            }
-        }
-        
+        console.log(`⚠️ Navigation failed. Target: ${targetPageNumber}. No valid buttons found.`);
         return false;
+
     } catch (error) {
-        console.error(`❌ Navigation error to page ${pageNumber}:`, error.message);
+        console.error(`❌ Navigation error to page ${targetPageNumber}:`, error.message);
         return false;
     }
 };
@@ -390,20 +302,7 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
     
     for (const vehicle of vehiclesData) {
         try {
-            if (!vehicle.stock) {
-                console.log(`⚠️ Skipping vehicle without stock number`);
-                continue;
-            }
-            
-            let parsedAuctionDate = null;
-            if (vehicle.auctionDate) {
-                const parsedDate = parseDate(vehicle.auctionDate);
-                if (parsedDate && !isNaN(parsedDate.getTime())) {
-                    parsedAuctionDate = parsedDate;
-                } else {
-                    console.log(`⚠️ Invalid auction date for vehicle ${vehicle.stock}: "${vehicle.auctionDate}"`);
-                }
-            }
+            if (!vehicle.stock) continue;
             
             const carData = {
                 stock: vehicle.stock,
@@ -415,7 +314,7 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
                 engineStatus: vehicle.engineStatus || 'Unknown',
                 bidPrice: vehicle.bidPrice || 0,
                 buyNowPrice: vehicle.buyNowPrice || null,
-                auctionDate: parsedAuctionDate,
+                auctionDate: vehicle.auctionDate ? parseDate(vehicle.auctionDate) : null,
                 detailUrl: vehicle.detailUrl || '',
                 imageUrl: vehicle.imageUrl || '',
                 version: vehicle.version || null,
@@ -430,17 +329,12 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
             
             await upsertCar(carData);
             savedCount++;
-            
-            if (savedCount % 10 === 0) {
-                console.log(`💾 Saved ${savedCount} vehicles to database so far...`);
-            }
-            
         } catch (error) {
             errorCount++;
-            console.error(`❌ Error saving vehicle ${vehicle.stock}:`, error.message);
         }
     }
     
+    if (savedCount > 0) console.log(`💾 Saved ${savedCount} vehicles (Errors: ${errorCount})`);
     return { saved: savedCount, errors: errorCount };
 };
 
@@ -448,80 +342,69 @@ const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
     maxConcurrency,
     requestHandlerTimeoutSecs: 300,
-    navigationTimeoutSecs: 120,
-    launchContext: { launchOptions: { headless, args: ['--no-sandbox'] } },
+    launchContext: { launchOptions: { headless, args: ['--no-sandbox', '--disable-setuid-sandbox'] } },
 
     async requestHandler({ page, request }) {
         console.log(`📖 Processing: ${request.url}`);
         try {
             await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 60000 }); 
             await handleCookieConsent(page);
-            if (!await waitForResults(page)) {
-                console.log('Stopping processing for this URL as no results were found.');
-                return;
-            }
+            if (!await waitForResults(page)) return;
             
             const totalCount = await getTotalAuctionsCount(page);
             stats.totalVehiclesOnSite = totalCount;
-            console.log(`\n🎉 Total auctions found on site: ${totalCount}`);
+            console.log(`🎉 Total auctions found: ${totalCount}`);
 
             let currentPage = 1;
             
             while (true) {
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
 
-                const vehiclesData = await extractVehicleDataFromList(page);
-                console.log(`✅ Found ${vehiclesData.length} vehicles on page ${currentPage}`);
+                // Poczekaj chwilę na stabilizację DOM przed skrobaniem
+                await page.waitForTimeout(1000);
 
-                if (vehiclesData.length === 0) {
-                   console.log('⚠️ No vehicles found on this page. Stopping pagination.');
-                   break;
-                }
+                const vehiclesData = await extractVehicleDataFromList(page);
                 
+                if (vehiclesData.length === 0) {
+                    console.log('⚠️ No vehicles found. Stopping pagination.');
+                    break;
+                }
+
+                console.log(`✅ Found ${vehiclesData.length} vehicles.`);
                 stats.vehiclesFound += vehiclesData.length;
                 
-                console.log('💾 Saving vehicles to database...');
                 const { saved, errors } = await saveVehiclesToDatabase(vehiclesData);
                 stats.dbSaved += saved;
                 stats.dbErrors += errors;
-                
-                await dataset.pushData(vehiclesData);
                 stats.pagesProcessed = currentPage;
 
-                console.log(`⏳ Attempting to navigate to next page...`);
-                const navigationSuccess = await navigateToPageNumber(page, currentPage + 1);
+                // Sprawdzenie limitów
+                if (typeof stats.totalVehiclesOnSite === 'number' && stats.vehiclesFound >= stats.totalVehiclesOnSite) {
+                    console.log(`🛑 Reached total count. Stopping.`);
+                    break;
+                }
+                if (currentPage >= maxPages) {
+                    console.log(`🛑 Max pages reached.`);
+                    break;
+                }
 
+                // NAWIGACJA
+                const navigationSuccess = await navigateToPageNumber(page, currentPage + 1);
                 if (navigationSuccess) {
                     currentPage++;
-                    console.log(`✅ Successfully moved to page ${currentPage}`);
                 } else {
-                    console.log('🏁 Navigation failed - reached end of results or no more buttons available.');
-                    break;
-                }
-                
-                if (typeof stats.totalVehiclesOnSite === 'number' && stats.vehiclesFound >= stats.totalVehiclesOnSite) {
-                    console.log(`\n🛑 Reached or exceeded the reported total of ${stats.totalVehiclesOnSite} vehicles. Stopping crawl.`);
-                    break;
-                }
-                
-                if (currentPage > maxPages) {
-                    console.log(`\n🛑 Reached maximum pages limit (${maxPages}). Stopping crawl.`);
+                    console.log('🏁 End of pagination or navigation failed.');
                     break;
                 }
             }
         } catch (error) {
-            console.log(`❌ Main error processing ${request.url}:`, error.message);
+            console.log(`❌ Main error:`, error.message);
             stats.errors++;
         }
     },
-    failedRequestHandler: async ({ request }) => {
-        console.log(`❌ Request completely failed: ${request.url}`);
-        stats.errors++;
-    }
 });
 
 await crawler.addRequests(startUrls);
-console.log('🏃‍♂️ Starting crawler...');
 await crawler.run();
 
 stats.endTime = new Date();
@@ -529,24 +412,12 @@ stats.duration = (stats.endTime - stats.startTime);
 
 console.log('\n' + '='.repeat(50));
 console.log('🎉 Crawling completed!');
-console.log('📊 Final Statistics:', {
-    pagesProcessed: stats.pagesProcessed,
-    vehiclesFound: stats.vehiclesFound,
-    totalVehiclesOnSite: stats.totalVehiclesOnSite, 
-    errors: stats.errors,
-    dbSaved: stats.dbSaved,
-    dbErrors: stats.dbErrors,
+console.log('📊 Statistics:', {
+    pages: stats.pagesProcessed,
+    found: stats.vehiclesFound,
+    saved: stats.dbSaved,
     duration: `${Math.round(stats.duration / 1000)}s`,
 });
 
-console.log('\n📊 Final Database Statistics:');
-const finalStats = await getStats();
-console.log(`   Total cars in database: ${finalStats.totalCars}`);
-console.log(`   Cars added this session: ${stats.dbSaved}`);
-
-console.log('='.repeat(50));
-
 await closeDatabase();
-console.log('🔒 Database connection closed.');
-
 await Actor.exit();
