@@ -8,7 +8,7 @@ console.log('🚀 IAAI Enhanced Data Scraper (V6 - Prisma Integration) - Startin
 const input = await Actor.getInput() ?? {};
 const {
     startUrls = [{ url: 'https://www.iaai.com/Search?queryFilterValue=Buy%20Now&queryFilterGroup=AuctionType' }],
-    maxRequestsPerCrawl = 1000,
+    maxRequestsPerCrawl = 20000,
     maxConcurrency = 1,
     proxyConfiguration,
     headless = true,
