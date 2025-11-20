@@ -3,7 +3,7 @@ import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { prisma, testConnection, upsertCar, closeDatabase, getStats, showConnectionInfo } from './prisma.js';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (V6 - Prisma Integration) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (V7 - Prisma + Fixed Pagination) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -177,55 +177,42 @@ const extractVehicleDataFromList = async (page) => {
 const parseDate = (dateString) => {
     if (!dateString || typeof dateString !== 'string') return null;
     
-    // Clean up the date string
     const cleaned = dateString.trim();
     
-    // Try direct parsing first
     const directDate = new Date(cleaned);
     if (!isNaN(directDate.getTime())) {
         return directDate;
     }
     
-    // Common date patterns from IAAI
     const patterns = [
-        // MM/DD/YYYY, M/D/YYYY, MM/D/YYYY
         /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/,
-        // MM/DD/YY, M/D/YY
         /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/,
-        // DD-MM-YYYY
         /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/,
-        // YYYY-MM-DD
         /^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/,
-        // MM DD YYYY
         /^(\d{1,2})\s+(\d{1,2})\s+(\d{4})$/,
     ];
     
-    // Try each pattern
     for (const pattern of patterns) {
         const match = cleaned.match(pattern);
         if (match) {
             let day, month, year;
             
-            // MM/DD/YYYY or DD/MM/YYYY format
-            if (pattern.source.includes('4')) { // 4-digit year
+            if (pattern.source.includes('4')) {
                 if (cleaned.match(/^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$/)) {
-                    // YYYY-MM-DD format
                     year = parseInt(match[1]);
                     month = parseInt(match[2]);
                     day = parseInt(match[3]);
                 } else {
-                    // Assume MM/DD/YYYY format (most common in US)
                     month = parseInt(match[1]);
                     day = parseInt(match[2]);
                     year = parseInt(match[3]);
                 }
-            } else { // 2-digit year
+            } else {
                 month = parseInt(match[1]);
                 day = parseInt(match[2]);
-                year = parseInt(match[3]) + 2000; // Assume 20xx
+                year = parseInt(match[3]) + 2000;
             }
             
-            // Validate the date
             if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && year >= 2000 && year <= 2030) {
                 const date = new Date(year, month - 1, day);
                 if (date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day) {
@@ -317,32 +304,82 @@ const getTotalAuctionsCount = async (page) => {
     }
 };
 
-// --- FUNKCJA DO NAWIGACJI PO STRONACH ---
+// --- ULEPSZONA FUNKCJA DO NAWIGACJI PO STRONACH ---
 const navigateToPageNumber = async (page, pageNumber) => {
     try {
-        const pageButtonSelector = `button#PageNumber${pageNumber}`;
-        const pageButton = page.locator(pageButtonSelector);
-        if (await pageButton.count() > 0 && await pageButton.isEnabled()) {
-            console.log(`🔢 Clicking page number button: ${pageNumber}`);
-            
-            const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
-            const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
-            
-            await waitForLoaderToDisappear(page);
-            await pageButton.scrollIntoViewIfNeeded();
-            await pageButton.click();
-
-            console.log(`⏳ Waiting for content to update...`);
-            await page.waitForFunction((expectedOldHref) => {
-                const currentFirstLink = document.querySelector('a[href^="/VehicleDetail/"]');
-                return currentFirstLink && currentFirstLink.getAttribute('href') !== expectedOldHref;
-            }, hrefBeforeClick, { timeout: 20000 });
-            console.log(`✅ Successfully navigated to page ${pageNumber}`);
-            return true;
+        await waitForLoaderToDisappear(page);
+        
+        const firstLinkLocator = page.locator('a[href^="/VehicleDetail/"]').first();
+        const hrefBeforeClick = await firstLinkLocator.getAttribute('href');
+        
+        console.log(`🔢 Attempting to navigate to page ${pageNumber}`);
+        
+        // STRATEGIA 1: Przycisk z numerem strony (PageNumber{X})
+        let pageButton = page.locator(`button#PageNumber${pageNumber}`);
+        if (await pageButton.count() > 0) {
+            const isVisible = await pageButton.isVisible({ timeout: 2000 }).catch(() => false);
+            const isEnabled = await pageButton.isEnabled({ timeout: 1000 }).catch(() => false);
+            if (isVisible && isEnabled) {
+                console.log(`✅ Clicking page number button: ${pageNumber}`);
+                await pageButton.click();
+                await page.waitForTimeout(1500);
+                await waitForLoaderToDisappear(page);
+                return true;
+            }
         }
+        
+        // STRATEGIA 2: Przycisk "Dalej" (btn-next)
+        const nextButton = page.locator('button.btn-next');
+        if (await nextButton.count() > 0) {
+            const isVisible = await nextButton.isVisible({ timeout: 2000 }).catch(() => false);
+            const isEnabled = await nextButton.isEnabled({ timeout: 1000 }).catch(() => false);
+            if (isVisible && isEnabled) {
+                console.log(`➡️ Clicking Next button (btn-next)`);
+                await nextButton.click();
+                await page.waitForTimeout(1500);
+                await waitForLoaderToDisappear(page);
+                return true;
+            }
+        }
+        
+        // STRATEGIA 3: Przycisk "+10 stron" (btn-next-10)
+        const next10Button = page.locator('button.btn-next-10');
+        if (await next10Button.count() > 0) {
+            const isVisible = await next10Button.isVisible({ timeout: 2000 }).catch(() => false);
+            const isEnabled = await next10Button.isEnabled({ timeout: 1000 }).catch(() => false);
+            if (isVisible && isEnabled) {
+                console.log(`⏭️ Clicking Next 10 Pages button (btn-next-10)`);
+                await next10Button.click();
+                await page.waitForTimeout(1500);
+                await waitForLoaderToDisappear(page);
+                return true;
+            }
+        }
+        
+        console.log(`⚠️ Could not find active navigation button for page ${pageNumber}`);
+        
+        // DEBUGOWANIE: Wyświetl dostępne przyciski paginacji
+        if (debugMode) {
+            console.log('📋 Available pagination buttons:');
+            const paginationButtons = await page.locator('button[class*="btn"]').all();
+            for (let i = 0; i < Math.min(paginationButtons.length, 20); i++) {
+                try {
+                    const text = await paginationButtons[i].textContent({ timeout: 500 }).catch(() => '');
+                    const className = await paginationButtons[i].getAttribute('class').catch(() => '');
+                    const isEnabled = await paginationButtons[i].isEnabled({ timeout: 500 }).catch(() => false);
+                    if (className.includes('btn')) {
+                        console.log(`   [${isEnabled ? '✓' : '✗'}] ${className} - "${text.trim()}"`);
+                    }
+                } catch (e) {
+                    // Ignore
+                }
+            }
+        }
+        
         return false;
     } catch (error) {
-        return false; 
+        console.error(`❌ Navigation error to page ${pageNumber}:`, error.message);
+        return false;
     }
 };
 
@@ -353,13 +390,11 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
     
     for (const vehicle of vehiclesData) {
         try {
-            // Skip if stock number is missing (required field)
             if (!vehicle.stock) {
                 console.log(`⚠️ Skipping vehicle without stock number`);
                 continue;
             }
             
-            // Parse auction date with proper error handling
             let parsedAuctionDate = null;
             if (vehicle.auctionDate) {
                 const parsedDate = parseDate(vehicle.auctionDate);
@@ -370,7 +405,6 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
                 }
             }
             
-            // Convert data types to match Prisma schema
             const carData = {
                 stock: vehicle.stock,
                 year: vehicle.year || 2020,
@@ -427,7 +461,6 @@ const crawler = new PlaywrightCrawler({
                 return;
             }
             
-            // Pobieramy łączną liczbę aukcji
             const totalCount = await getTotalAuctionsCount(page);
             stats.totalVehiclesOnSite = totalCount;
             console.log(`\n🎉 Total auctions found on site: ${totalCount}`);
@@ -440,7 +473,6 @@ const crawler = new PlaywrightCrawler({
                 const vehiclesData = await extractVehicleDataFromList(page);
                 console.log(`✅ Found ${vehiclesData.length} vehicles on page ${currentPage}`);
 
-                // WARUNEK ZAKOŃCZENIA 1: Jeśli nie znaleziono żadnych pojazdów na stronie
                 if (vehiclesData.length === 0) {
                    console.log('⚠️ No vehicles found on this page. Stopping pagination.');
                    break;
@@ -448,30 +480,32 @@ const crawler = new PlaywrightCrawler({
                 
                 stats.vehiclesFound += vehiclesData.length;
                 
-                // ZAPISYWANIE DO BAZY DANYCH
                 console.log('💾 Saving vehicles to database...');
                 const { saved, errors } = await saveVehiclesToDatabase(vehiclesData);
                 stats.dbSaved += saved;
                 stats.dbErrors += errors;
                 
-                await dataset.pushData(vehiclesData); // Keep original dataset for compatibility
+                await dataset.pushData(vehiclesData);
                 stats.pagesProcessed = currentPage;
 
-                // --- LOGIKA NAWIGACJI ---
-                const nextPageNumber = currentPage + 1;
-                let navigationSuccess = await navigateToPageNumber(page, nextPageNumber);
+                console.log(`⏳ Attempting to navigate to next page...`);
+                const navigationSuccess = await navigateToPageNumber(page, currentPage + 1);
 
-                // WARUNEK ZAKOŃCZENIA 2: Jeśli ŻADNA nawigacja nie powiodła się
                 if (navigationSuccess) {
                     currentPage++;
+                    console.log(`✅ Successfully moved to page ${currentPage}`);
                 } else {
-                    console.log('🏁 No more navigation buttons available (or page number button not active). End of pagination.');
+                    console.log('🏁 Navigation failed - reached end of results or no more buttons available.');
                     break;
                 }
                 
-                // *** DODATKOWY WARUNEK ZAKOŃCZENIA (pomocniczy) ***
                 if (typeof stats.totalVehiclesOnSite === 'number' && stats.vehiclesFound >= stats.totalVehiclesOnSite) {
                     console.log(`\n🛑 Reached or exceeded the reported total of ${stats.totalVehiclesOnSite} vehicles. Stopping crawl.`);
+                    break;
+                }
+                
+                if (currentPage > maxPages) {
+                    console.log(`\n🛑 Reached maximum pages limit (${maxPages}). Stopping crawl.`);
                     break;
                 }
             }
@@ -512,7 +546,6 @@ console.log(`   Cars added this session: ${stats.dbSaved}`);
 
 console.log('='.repeat(50));
 
-// Close database connection
 await closeDatabase();
 console.log('🔒 Database connection closed.');
 
