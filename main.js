@@ -1,9 +1,10 @@
 import { Actor } from 'apify';
-import { PlaywrightCrawler, Dataset } from 'crawlee';
+// DODANO: KeyValueStore do zapisu stanu
+import { PlaywrightCrawler, Dataset, KeyValueStore } from 'crawlee';
 import { prisma, testConnection, upsertCar, closeDatabase, getStats, showConnectionInfo } from './prisma.js';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (V8 - Pagination Fix) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (V9 - Auto-Resume + Anti-Timeout) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -18,6 +19,14 @@ const {
 
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
 const dataset = await Dataset.open();
+
+// --- KONFIGURACJA STANU (RESUME) ---
+const STATE_KEY = 'CRAWLER_STATE';
+// Pobierz ostatni stan (numer strony) z pamięci trwałej
+const savedState = await KeyValueStore.getValue(STATE_KEY) || { lastPageProcessed: 0 };
+if (savedState.lastPageProcessed > 0) {
+    console.log(`💾 FOUND SAVED STATE: Last successfully processed page was ${savedState.lastPageProcessed}. Will attempt to resume.`);
+}
 
 console.log('🔗 Database Configuration:');
 showConnectionInfo();
@@ -175,7 +184,6 @@ const parseDate = (dateString) => {
     const directDate = new Date(cleaned);
     if (!isNaN(directDate.getTime())) return directDate;
     
-    // Uproszczone parsowanie dat
     const match = cleaned.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
     if (match) {
         const m = parseInt(match[1]);
@@ -188,12 +196,10 @@ const parseDate = (dateString) => {
 
 const waitForLoaderToDisappear = async (page, timeout = 25000) => {
     try {
-        // Czekamy na główny loader
         await page.waitForSelector('.circle-loader-shape', { state: 'hidden', timeout });
-        // Czekamy też na ewentualny overlay blokujący (częste przy paginacji AJAX)
         await page.waitForSelector('.blockUI.blockOverlay', { state: 'hidden', timeout: 5000 }).catch(() => {});
     } catch (e) {
-        console.log('⚠️ Loader wait warning (continuing).');
+        // Ignorujemy warningi timeoutu loadera, by nie przerywać procesu
     }
 };
 
@@ -226,49 +232,63 @@ const getTotalAuctionsCount = async (page) => {
     } catch (e) { return 'N/A'; }
 };
 
-// --- NAPRAWIONA FUNKCJA DO NAWIGACJI PO STRONACH ---
+// --- NOWA FUNKCJA: SZYBKIE PRZEWIJANIE (FAST FORWARD) ---
+// Służy do pominięcia stron 1..N-1 po restarcie
+const fastForwardToPage = async (page, targetPage) => {
+    console.log(`⏩ FAST FORWARD MODE: Jumping to page ${targetPage}...`);
+    
+    let currentRangeMax = 10; // Zakładamy, że na starcie widzimy strony 1-10
+    
+    // Dopóki docelowa strona jest większa niż to, co widzimy na pasku paginacji...
+    while (targetPage > currentRangeMax) {
+        console.log(`   Current range max: ${currentRangeMax}. Target: ${targetPage}. Clicking "Next 10 Pages"...`);
+        
+        const nextTenBtn = page.locator('button.btn-next-10').first();
+        if (await nextTenBtn.isVisible() && await nextTenBtn.isEnabled()) {
+            await nextTenBtn.click();
+            await page.waitForTimeout(1500); // Czekamy na przeładowanie paska paginacji
+            await waitForLoaderToDisappear(page);
+            
+            currentRangeMax += 10; // Przesuwamy zakres o 10 (np. z 10 na 20)
+        } else {
+            console.log('⚠️ Cannot fast forward anymore (Next 10 button missing/disabled).');
+            break;
+        }
+    }
+    
+    console.log(`🎯 Range reached. Clicking specific page button: ${targetPage}`);
+    await navigateToPageNumber(page, targetPage);
+};
+
+// --- FUNKCJA DO NAWIGACJI (Krok po kroku) ---
 const navigateToPageNumber = async (page, targetPageNumber) => {
     try {
         await waitForLoaderToDisappear(page);
         
-        console.log(`🔢 Attempting to navigate to page ${targetPageNumber}`);
-        
-        // STRATEGIA 1: Bezpośredni przycisk numeru strony (jeśli jest widoczny)
-        // Np. przycisk "91" jeśli właśnie załadowaliśmy nowy blok
+        // STRATEGIA 1: Bezpośredni przycisk
         const specificPageBtn = page.locator(`button#PageNumber${targetPageNumber}`);
         if (await specificPageBtn.isVisible({ timeout: 1000 }) && await specificPageBtn.isEnabled()) {
-            console.log(`✅ Clicking direct page button: ${targetPageNumber}`);
             await specificPageBtn.click();
             await waitForLoaderToDisappear(page);
             return true;
         }
 
-        // STRATEGIA 2: Obsługa "kolejnej dziesiątki" (Next 10 Pages)
-        // To naprawia problem przy stronie 90, 100 itd.
-        // Szukamy przycisku, który ma klasę btn-next-10
+        // STRATEGIA 2: Next 10 Pages (gdy idziemy krok po kroku przez granicę np. 90->91)
         const nextTenBtn = page.locator('button.btn-next-10').first();
         const isNextTenVisible = await nextTenBtn.isVisible().catch(() => false);
         const isNextTenEnabled = await nextTenBtn.isEnabled().catch(() => false);
 
-        // Sprawdź, czy bezpośredni numer strony NIE istnieje, ale przycisk "Next 10" istnieje.
-        // Jest to kluczowe w momencie przejścia np. z 90 na 91.
         if (!await specificPageBtn.isVisible() && isNextTenVisible && isNextTenEnabled) {
-             console.log(`⏭️ Direct button missing. Clicking "Next 10 Pages" (btn-next-10) to load next block...`);
+             console.log(`⏭️ Direct button missing. Clicking "Next 10 Pages" (btn-next-10)...`);
              await nextTenBtn.click();
-             
-             // Po kliknięciu "Next 10" musimy poczekać, aż pojawi się nowy blok numerów
-             await page.waitForTimeout(2000); // Krótka pauza na start requestu
+             await page.waitForTimeout(2000);
              await waitForLoaderToDisappear(page);
              
-             // Po przeładowaniu bloku, musimy kliknąć konkretny numer, jeśli nie jesteśmy na nim automatycznie
-             // Często IAAI po kliknięciu Next 10 ustawia aktywną pierwszą stronę z nowej dziesiątki (np. 91),
-             // ale dla pewności sprawdzamy.
+             // Po kliknięciu Next 10, kliknij właściwy numer
              const newSpecificBtn = page.locator(`button#PageNumber${targetPageNumber}`);
              if (await newSpecificBtn.isVisible()) {
-                 // Sprawdź, czy nie jest już aktywny
                  const classAttr = await newSpecificBtn.getAttribute('class');
                  if (!classAttr.includes('active')) {
-                     console.log(`   Clicking newly appeared button ${targetPageNumber}`);
                      await newSpecificBtn.click();
                      await waitForLoaderToDisappear(page);
                  }
@@ -276,34 +296,29 @@ const navigateToPageNumber = async (page, targetPageNumber) => {
              return true;
         }
 
-        // STRATEGIA 3: Zwykły przycisk "Next" (btn-next)
-        // Używamy go jako fallback, jeśli nie jesteśmy na granicy dziesiątek
+        // STRATEGIA 3: Standardowy Next
         const nextButton = page.locator('button.btn-next').first();
         if (await nextButton.isVisible() && await nextButton.isEnabled()) {
-            console.log(`➡️ Clicking Standard Next button`);
             await nextButton.click();
             await waitForLoaderToDisappear(page);
             return true;
         }
         
-        console.log(`⚠️ Navigation failed. Target: ${targetPageNumber}. No valid buttons found.`);
+        console.log(`⚠️ Navigation failed to page ${targetPageNumber}.`);
         return false;
 
     } catch (error) {
-        console.error(`❌ Navigation error to page ${targetPageNumber}:`, error.message);
+        console.error(`❌ Navigation error:`, error.message);
         return false;
     }
 };
 
-// --- FUNKCJA DO ZAPISYWANIA DO BAZY DANYCH ---
 const saveVehiclesToDatabase = async (vehiclesData) => {
     let savedCount = 0;
     let errorCount = 0;
-    
     for (const vehicle of vehiclesData) {
         try {
             if (!vehicle.stock) continue;
-            
             const carData = {
                 stock: vehicle.stock,
                 year: vehicle.year || 2020,
@@ -326,14 +341,10 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
                 videoUrl: vehicle.videoUrl || null,
                 is360: vehicle.is360 || false,
             };
-            
             await upsertCar(carData);
             savedCount++;
-        } catch (error) {
-            errorCount++;
-        }
+        } catch (error) { errorCount++; }
     }
-    
     if (savedCount > 0) console.log(`💾 Saved ${savedCount} vehicles (Errors: ${errorCount})`);
     return { saved: savedCount, errors: errorCount };
 };
@@ -341,7 +352,11 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
     maxConcurrency,
-    requestHandlerTimeoutSecs: 300,
+    
+    // 🔴 WAŻNA ZMIANA: Zwiększono limit czasu do 2 godzin (7200s)
+    // Poprzednio: 300s (co powodowało błąd po 5 minutach skrobania)
+    requestHandlerTimeoutSecs: 7200, 
+    
     launchContext: { launchOptions: { headless, args: ['--no-sandbox', '--disable-setuid-sandbox'] } },
 
     async requestHandler({ page, request }) {
@@ -357,10 +372,26 @@ const crawler = new PlaywrightCrawler({
 
             let currentPage = 1;
             
-            while (true) {
-                console.log(`\n📄 === Scraping page ${currentPage} ===`);
+            // --- LOGIKA WZNAWIANIA (RESUME) ---
+            // Jeśli mamy zapisaną stronę (np. 63), a jesteśmy na 1...
+            if (savedState.lastPageProcessed > 1) {
+                const resumePage = savedState.lastPageProcessed;
+                console.log(`🔄 Resuming from page ${resumePage}...`);
+                
+                // Użyj funkcji fast forward, aby pominąć scrapowanie stron 1-(N-1)
+                await fastForwardToPage(page, resumePage);
+                
+                currentPage = resumePage;
+                console.log(`✅ Successfully resumed at page ${currentPage}`);
+            }
+            // ----------------------------------
 
-                // Poczekaj chwilę na stabilizację DOM przed skrobaniem
+            while (true) {
+                // ZAPIS STANU: Przed scrapowaniem strony zapisz, gdzie jesteśmy
+                // (W razie awarii wiemy, że dotarliśmy do currentPage)
+                await KeyValueStore.setValue(STATE_KEY, { lastPageProcessed: currentPage });
+
+                console.log(`\n📄 === Scraping page ${currentPage} ===`);
                 await page.waitForTimeout(1000);
 
                 const vehiclesData = await extractVehicleDataFromList(page);
@@ -378,7 +409,6 @@ const crawler = new PlaywrightCrawler({
                 stats.dbErrors += errors;
                 stats.pagesProcessed = currentPage;
 
-                // Sprawdzenie limitów
                 if (typeof stats.totalVehiclesOnSite === 'number' && stats.vehiclesFound >= stats.totalVehiclesOnSite) {
                     console.log(`🛑 Reached total count. Stopping.`);
                     break;
@@ -388,7 +418,7 @@ const crawler = new PlaywrightCrawler({
                     break;
                 }
 
-                // NAWIGACJA
+                // NAWIGACJA DO NASTĘPNEJ STRONY
                 const navigationSuccess = await navigateToPageNumber(page, currentPage + 1);
                 if (navigationSuccess) {
                     currentPage++;
@@ -418,6 +448,9 @@ console.log('📊 Statistics:', {
     saved: stats.dbSaved,
     duration: `${Math.round(stats.duration / 1000)}s`,
 });
+
+// Opcjonalnie: Wyczyść stan po udanym zakończeniu, by następne uruchomienie było od zera
+// await KeyValueStore.setValue(STATE_KEY, { lastPageProcessed: 0 });
 
 await closeDatabase();
 await Actor.exit();
