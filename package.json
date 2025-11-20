@@ -7,8 +7,8 @@
 	"scripts": {
 		"start": "node main.js",
 		"prisma:generate": "prisma generate",
-		"prisma:push": "prisma db push",
-		"prisma:studio": "prisma studio",
+		"prisma:push": "prisma db push --schema=prisma/schema.prisma",
+		"prisma:studio": "prisma studio --schema=prisma/schema.prisma",
 		"postinstall": "prisma generate --schema=prisma/schema.prisma"
 	},
 	"prisma": {

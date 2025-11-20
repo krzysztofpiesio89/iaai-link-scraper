@@ -6,8 +6,99 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql" // or "mysql", "sqlite", "sqlserver" based on your setup
+  provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ===================================================
+// MODELE WYMAGANE PRZEZ NEXT-AUTH (POPRAWIONE)
+// ===================================================
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text // Poprawiona nazwa i typ
+  access_token      String? @db.Text // Poprawiona nazwa i typ
+  expires_at        Int?             // Poprawiona nazwa
+  token_type        String?          // Dodane brakujące pole
+  scope             String?          // Dodane brakujące pole
+  id_token          String? @db.Text // Dodane brakujące pole
+  session_state     String?          // Dodane brakujące pole
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token]) // Poprawiony format dla NextAuth v4+
+}
+
+
+// ===================================================
+// TWOJE MODELE (Z USPRAWNIENIAMI)
+// ===================================================
+
+model User {
+  id                      String                   @id @default(cuid())
+  email                   String?                  @unique
+  name                    String?
+  password                String?
+  image                   String?
+  emailVerified           DateTime?
+  stripeCustomerId        String?                  @unique
+  lastSeen                DateTime?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  role                    String                   @default("USER")
+  depositPaid             Boolean                  @default(false)
+
+  // Relacje
+  accounts                Account[]
+  sessions                Session[] // Dodana relacja do modelu Session
+  auctionParticipations   AuctionParticipation[]
+  billingDetails          BillingDetails?
+  documents               Document[]
+  favorites               Favorite[]
+  sentMessages            Message[]                @relation("SenderMessages")   // Nazwana relacja
+  receivedMessages        Message[]                @relation("RecipientMessages") // Nazwana relacja
+  notifications           Notification[]
+  payments                Payment[]
+}
+
+
+model BillingDetails {
+  id           Int      @id @default(autoincrement())
+  userId       String   @unique
+  accountType  String   @default("INDIVIDUAL")
+  firstName    String?
+  lastName     String?
+  companyName  String?
+  taxId        String?
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  postalCode   String
+  country      String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Car {
@@ -42,33 +133,115 @@ model Car {
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt
 
-  // Relations
+  // Relacje
   auctionParticipations AuctionParticipation[]
   favorites             Favorite[]
-
-  @@map("cars")
-}
-
-model AuctionParticipation {
-  id        Int      @id @default(autoincrement())
-  carId     Int
-  bidAmount Float?
-  status    String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  car Car @relation(fields: [carId], references: [id], onDelete: Cascade)
-
-  @@map("auction_participations")
 }
 
 model Favorite {
   id        Int      @id @default(autoincrement())
+  userId    String
   carId     Int
-  userId    String?
   createdAt DateTime @default(now())
 
-  car Car @relation(fields: [carId], references: [id], onDelete: Cascade)
+  car       Car      @relation(fields: [carId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@map("favorites")
+  @@unique([userId, carId])
+}
+
+model AuctionParticipation {
+  id            Int       @id @default(autoincrement())
+  userId        String
+  carId         Int
+  maxBid        Float
+  auctionStatus String
+  paymentStatus String    @default("UNPAID")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  car           Car       @relation(fields: [carId], references: [id], onDelete: Cascade)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Relacje
+  documents     Document[]
+  payments      Payment[]
+  shipment      Shipment?
+
+  @@unique([userId, carId])
+}
+
+model Payment {
+  id                     String                    @id @default(cuid())
+  amount                 Float
+  currency               String
+  status                 String
+  paymentIntentId        String                    @unique
+  userId                 String
+  auctionParticipationId Int?
+  createdAt              DateTime                  @default(now())
+  updatedAt              DateTime                  @updatedAt
+
+  auctionParticipation   AuctionParticipation?     @relation(fields: [auctionParticipationId], references: [id], onDelete: SetNull) // Zmieniono na SetNull
+  user                   User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Shipment {
+  id                     String                 @id @default(cuid())
+  status                 String
+  trackingNumber         String?
+  trackingUrl            String?
+  estimatedDelivery      DateTime?
+  auctionParticipationId Int                    @unique
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+  auctionParticipation   AuctionParticipation   @relation(fields: [auctionParticipationId], references: [id], onDelete: Cascade)
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  subject     String
+  body        String   @db.Text
+  isRead      Boolean  @default(false)
+  senderId    String
+  recipientId String
+  createdAt   DateTime @default(now())
+
+  sender      User     @relation("SenderMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient   User     @relation("RecipientMessages", fields: [recipientId], references: [id], onDelete: Cascade)
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  userId    String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Document {
+  id                     String                    @id @default(cuid())
+  fileName               String
+  fileUrl                String
+  fileType               String
+  userId                 String
+  auctionParticipationId Int?
+  createdAt              DateTime                  @default(now())
+
+  auctionParticipation   AuctionParticipation?     @relation(fields: [auctionParticipationId], references: [id], onDelete: SetNull) // Zmieniono na SetNull
+  user                   User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UploadJob {
+  id        String   @id
+  status    String
+  total     Int
+  processed Int
+  message   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
