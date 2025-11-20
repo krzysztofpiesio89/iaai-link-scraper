@@ -1,6 +1,6 @@
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
-import { prisma, testConnection, upsertCar, closeDatabase, getStats } from './prisma.js';
+import { prisma, testConnection, upsertCar, closeDatabase, getStats, showConnectionInfo } from './prisma.js';
 
 await Actor.init();
 console.log('🚀 IAAI Enhanced Data Scraper (V6 - Prisma Integration) - Starting...');
@@ -19,14 +19,21 @@ const {
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
 const dataset = await Dataset.open();
 
-console.log('🔗 Testing database connection...');
+console.log('🔗 Database Configuration:');
+showConnectionInfo();
+
+console.log('\n🔗 Testing database connection...');
 const dbConnected = await testConnection();
 if (!dbConnected) {
-    console.error('❌ Database connection failed. Please check your DATABASE_URL environment variable.');
+    console.error('❌ Database connection failed. Please check your environment variables:');
+    console.log('   DATABASE_URL');
+    console.log('   DATABASE_POSTGRES_URL');
+    console.log('   DATABASE_PRISMA_DATABASE_URL');
+    console.log('   DATABASE_DATABASE_URL');
     await Actor.exit();
 }
 
-console.log('📊 Initial database statistics:');
+console.log('\n📊 Initial database statistics:');
 const initialStats = await getStats();
 console.log(`   Total cars in database: ${initialStats.totalCars}`);
 console.log(`   Recent cars: ${initialStats.recentCars.length} added in last session`);
