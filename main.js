@@ -20,9 +20,70 @@ const {
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
 const dataset = await Dataset.open();
 
+// --- LOGIKA PARSOWANIA (ZGODNA Z SYSTEMEM UPLOAD) ---
+const parseField = {
+    toInt: (value) => {
+        if (!value) return null;
+        // Konwersja na string w razie gdyby przyszła liczba
+        const strVal = String(value);
+        const parsed = parseInt(strVal.replace(/[^0-9]/g, ''), 10);
+        return isNaN(parsed) ? null : parsed;
+    },
+    toKmFromMiles: (value) => {
+        if (!value) return null;
+        const strVal = String(value);
+        const miles = parseInt(strVal.replace(/[^0-9]/g, ''), 10);
+        if (isNaN(miles)) return null;
+        return Math.round(miles * 1.60934);
+    },
+    toFloat: (value) => {
+        if (!value) return null;
+        const strVal = String(value);
+        const cleanedValue = strVal.replace(/,/g, '').replace(/[^0-9.]/g, '');
+        const parsed = parseFloat(cleanedValue);
+        return isNaN(parsed) ? null : parsed;
+    },
+    toDate: (value) => {
+        if (!value) return null;
+        try {
+            const strVal = String(value);
+            const monthMap = { 'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12' };
+            const tzOffsets = { 'EDT': '-04:00', 'EST': '-05:00', 'CDT': '-05:00', 'CST': '-06:00', 'MDT': '-06:00', 'MST': '-07:00', 'PDT': '-07:00', 'PST': '-08:00' };
+            
+            const dateParts = strVal.match(/(\w{3})\s(\d{1,2})/);
+            const timeParts = strVal.match(/(\d{1,2})(?::(\d{2}))?(am|pm)\s([A-Z]{3})/);
+            
+            if (!dateParts || !timeParts) return null;
+            
+            const [, monthStr, day] = dateParts;
+            const [, hourStr, minute, ampm, tz] = timeParts;
+            
+            const finalMinute = minute || '00';
+            const month = monthMap[monthStr];
+            const year = new Date().getFullYear();
+            
+            let hour = parseInt(hourStr, 10);
+            if (ampm.toLowerCase() === 'pm' && hour < 12) hour += 12;
+            if (ampm.toLowerCase() === 'am' && hour === 12) hour = 0;
+            
+            const offset = tzOffsets[tz];
+            
+            // Fallback dla braku offsetu lub miesiąca
+            if (!month || !offset) return null;
+            
+            const isoString = `${year}-${month}-${day.padStart(2, '0')}T${String(hour).padStart(2, '0')}:${finalMinute}:00${offset}`;
+            const finalDate = new Date(isoString);
+            
+            return isNaN(finalDate.getTime()) ? null : finalDate;
+        } catch (error) { 
+            console.warn('Error parsing date:', error.message);
+            return null; 
+        }
+    }
+};
+
 // --- KONFIGURACJA STANU (RESUME) ---
 const STATE_KEY = 'CRAWLER_STATE';
-// Pobierz ostatni stan (numer strony) z pamięci trwałej
 const savedState = await KeyValueStore.getValue(STATE_KEY) || { lastPageProcessed: 0 };
 if (savedState.lastPageProcessed > 0) {
     console.log(`💾 FOUND SAVED STATE: Last successfully processed page was ${savedState.lastPageProcessed}. Will attempt to resume.`);
@@ -113,8 +174,8 @@ const extractVehicleDataFromList = async (page) => {
                 const damageParts = [primaryDamage, lossType].filter(Boolean);
                 const damageType = damageParts.length > 0 ? damageParts.join(' / ') : "";
                 
+                // Pobieramy jako tekst, parsowanie zrobimy w Node.js za pomocą parseField
                 const mileage = getTextByTitle("Odometer:");
-                const mileageNum = mileage ? parseInt(mileage.replace(/,/g, '')) : null;
                 
                 const engineInfo = getTextByTitle("Engine:");
                 const fuelType = getTextByTitle("Fuel Type:");
@@ -129,8 +190,6 @@ const extractVehicleDataFromList = async (page) => {
                     bidPrice = acvValue.trim();
                 }
                 
-                const bidPriceNum = bidPrice ? parseFloat(bidPrice.replace(/[$,]/g, '')) : 0;
-                
                 let buyNowPrice = null;
                 const actionLinks = row.querySelectorAll('.data-list--action a');
                 actionLinks.forEach(link => {
@@ -140,8 +199,7 @@ const extractVehicleDataFromList = async (page) => {
                     }
                 });
                 
-                const buyNowPriceNum = buyNowPrice ? parseFloat(buyNowPrice.replace(/[$,]/g, '')) : null;
-                
+                // Pobieramy surowy ciąg daty (np. "Oct 24 10:00am CDT")
                 const auctionDate = getText('.data-list__value--action');
                 const is360 = !!row.querySelector('span.media_360_view');
                 const videoUrl = stock ? `https://mediastorageaccountprod.blob.core.windows.net/media/${stock}_VES-100_1` : null;
@@ -152,18 +210,18 @@ const extractVehicleDataFromList = async (page) => {
                     make,
                     model,
                     version,
-                    auctionDate,
+                    auctionDate, // Raw string
                     is360,
                     damageType,
-                    mileage: mileageNum,
+                    mileage, // Raw string
                     engineStatus,
                     origin,
                     vin,
                     engineInfo,
                     fuelType,
                     cylinders,
-                    bidPrice: bidPriceNum,
-                    buyNowPrice: buyNowPriceNum,
+                    bidPrice, // Raw string
+                    buyNowPrice, // Raw string
                     videoUrl,
                     detailUrl,
                     imageUrl,
@@ -176,30 +234,14 @@ const extractVehicleDataFromList = async (page) => {
     });
 };
 
-// --- FUNKCJE POMOCNICZE ---
-
-const parseDate = (dateString) => {
-    if (!dateString || typeof dateString !== 'string') return null;
-    const cleaned = dateString.trim();
-    const directDate = new Date(cleaned);
-    if (!isNaN(directDate.getTime())) return directDate;
-    
-    const match = cleaned.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-    if (match) {
-        const m = parseInt(match[1]);
-        const d = parseInt(match[2]);
-        const y = parseInt(match[3]);
-        if (m > 0 && d > 0 && y > 2000) return new Date(y, m - 1, d);
-    }
-    return null;
-};
+// --- FUNKCJE POMOCNICZE (Stare parseDate usunięte na rzecz parseField) ---
 
 const waitForLoaderToDisappear = async (page, timeout = 25000) => {
     try {
         await page.waitForSelector('.circle-loader-shape', { state: 'hidden', timeout });
         await page.waitForSelector('.blockUI.blockOverlay', { state: 'hidden', timeout: 5000 }).catch(() => {});
     } catch (e) {
-        // Ignorujemy warningi timeoutu loadera, by nie przerywać procesu
+        // Ignorujemy warningi timeoutu loadera
     }
 };
 
@@ -232,40 +274,32 @@ const getTotalAuctionsCount = async (page) => {
     } catch (e) { return 'N/A'; }
 };
 
-// --- NOWA FUNKCJA: SZYBKIE PRZEWIJANIE (FAST FORWARD) ---
-// Służy do pominięcia stron 1..N-1 po restarcie
+// --- SZYBKIE PRZEWIJANIE (FAST FORWARD) ---
 const fastForwardToPage = async (page, targetPage) => {
     console.log(`⏩ FAST FORWARD MODE: Jumping to page ${targetPage}...`);
-    
-    let currentRangeMax = 10; // Zakładamy, że na starcie widzimy strony 1-10
-    
-    // Dopóki docelowa strona jest większa niż to, co widzimy na pasku paginacji...
+    let currentRangeMax = 10;
     while (targetPage > currentRangeMax) {
         console.log(`   Current range max: ${currentRangeMax}. Target: ${targetPage}. Clicking "Next 10 Pages"...`);
-        
         const nextTenBtn = page.locator('button.btn-next-10').first();
         if (await nextTenBtn.isVisible() && await nextTenBtn.isEnabled()) {
             await nextTenBtn.click();
-            await page.waitForTimeout(1500); // Czekamy na przeładowanie paska paginacji
+            await page.waitForTimeout(1500);
             await waitForLoaderToDisappear(page);
-            
-            currentRangeMax += 10; // Przesuwamy zakres o 10 (np. z 10 na 20)
+            currentRangeMax += 10;
         } else {
             console.log('⚠️ Cannot fast forward anymore (Next 10 button missing/disabled).');
             break;
         }
     }
-    
     console.log(`🎯 Range reached. Clicking specific page button: ${targetPage}`);
     await navigateToPageNumber(page, targetPage);
 };
 
-// --- FUNKCJA DO NAWIGACJI (Krok po kroku) ---
+// --- NAWIGACJA ---
 const navigateToPageNumber = async (page, targetPageNumber) => {
     try {
         await waitForLoaderToDisappear(page);
         
-        // STRATEGIA 1: Bezpośredni przycisk
         const specificPageBtn = page.locator(`button#PageNumber${targetPageNumber}`);
         if (await specificPageBtn.isVisible({ timeout: 1000 }) && await specificPageBtn.isEnabled()) {
             await specificPageBtn.click();
@@ -273,7 +307,6 @@ const navigateToPageNumber = async (page, targetPageNumber) => {
             return true;
         }
 
-        // STRATEGIA 2: Next 10 Pages (gdy idziemy krok po kroku przez granicę np. 90->91)
         const nextTenBtn = page.locator('button.btn-next-10').first();
         const isNextTenVisible = await nextTenBtn.isVisible().catch(() => false);
         const isNextTenEnabled = await nextTenBtn.isEnabled().catch(() => false);
@@ -284,7 +317,6 @@ const navigateToPageNumber = async (page, targetPageNumber) => {
              await page.waitForTimeout(2000);
              await waitForLoaderToDisappear(page);
              
-             // Po kliknięciu Next 10, kliknij właściwy numer
              const newSpecificBtn = page.locator(`button#PageNumber${targetPageNumber}`);
              if (await newSpecificBtn.isVisible()) {
                  const classAttr = await newSpecificBtn.getAttribute('class');
@@ -296,7 +328,6 @@ const navigateToPageNumber = async (page, targetPageNumber) => {
              return true;
         }
 
-        // STRATEGIA 3: Standardowy Next
         const nextButton = page.locator('button.btn-next').first();
         if (await nextButton.isVisible() && await nextButton.isEnabled()) {
             await nextButton.click();
@@ -313,23 +344,34 @@ const navigateToPageNumber = async (page, targetPageNumber) => {
     }
 };
 
+// --- ZAPIS DO BAZY (ZAKTUALIZOWANY O PARSOWANIE) ---
 const saveVehiclesToDatabase = async (vehiclesData) => {
     let savedCount = 0;
     let errorCount = 0;
     for (const vehicle of vehiclesData) {
         try {
             if (!vehicle.stock) continue;
+            
+            // TUTAJ ZASTOSOWANO NOWĄ LOGIKĘ PARSOWANIA
             const carData = {
                 stock: vehicle.stock,
                 year: vehicle.year || 2020,
                 make: vehicle.make || 'Unknown',
                 model: vehicle.model || 'Unknown',
                 damageType: vehicle.damageType || '',
-                mileage: vehicle.mileage || null,
+                
+                // Konwersja mil na kilometry przy użyciu logiki uploadu
+                mileage: parseField.toKmFromMiles(vehicle.mileage),
+                
                 engineStatus: vehicle.engineStatus || 'Unknown',
-                bidPrice: vehicle.bidPrice || 0,
-                buyNowPrice: vehicle.buyNowPrice || null,
-                auctionDate: vehicle.auctionDate ? parseDate(vehicle.auctionDate) : null,
+                
+                // Parsowanie cen
+                bidPrice: parseField.toFloat(vehicle.bidPrice) || 0,
+                buyNowPrice: parseField.toFloat(vehicle.buyNowPrice),
+                
+                // KRYTYCZNA POPRAWKA: Parsowanie daty zgodnie z systemem upload
+                auctionDate: parseField.toDate(vehicle.auctionDate),
+                
                 detailUrl: vehicle.detailUrl || '',
                 imageUrl: vehicle.imageUrl || '',
                 version: vehicle.version || null,
@@ -341,9 +383,13 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
                 videoUrl: vehicle.videoUrl || null,
                 is360: vehicle.is360 || false,
             };
+            
             await upsertCar(carData);
             savedCount++;
-        } catch (error) { errorCount++; }
+        } catch (error) { 
+            console.error(`DB Error for stock ${vehicle.stock}:`, error.message);
+            errorCount++; 
+        }
     }
     if (savedCount > 0) console.log(`💾 Saved ${savedCount} vehicles (Errors: ${errorCount})`);
     return { saved: savedCount, errors: errorCount };
@@ -352,11 +398,7 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
 const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxyConfigurationInstance,
     maxConcurrency,
-    
-    // 🔴 WAŻNA ZMIANA: Zwiększono limit czasu do 2 godzin (7200s)
-    // Poprzednio: 300s (co powodowało błąd po 5 minutach skrobania)
     requestHandlerTimeoutSecs: 7200, 
-    
     launchContext: { launchOptions: { headless, args: ['--no-sandbox', '--disable-setuid-sandbox'] } },
 
     async requestHandler({ page, request }) {
@@ -372,23 +414,15 @@ const crawler = new PlaywrightCrawler({
 
             let currentPage = 1;
             
-            // --- LOGIKA WZNAWIANIA (RESUME) ---
-            // Jeśli mamy zapisaną stronę (np. 63), a jesteśmy na 1...
             if (savedState.lastPageProcessed > 1) {
                 const resumePage = savedState.lastPageProcessed;
                 console.log(`🔄 Resuming from page ${resumePage}...`);
-                
-                // Użyj funkcji fast forward, aby pominąć scrapowanie stron 1-(N-1)
                 await fastForwardToPage(page, resumePage);
-                
                 currentPage = resumePage;
                 console.log(`✅ Successfully resumed at page ${currentPage}`);
             }
-            // ----------------------------------
 
             while (true) {
-                // ZAPIS STANU: Przed scrapowaniem strony zapisz, gdzie jesteśmy
-                // (W razie awarii wiemy, że dotarliśmy do currentPage)
                 await KeyValueStore.setValue(STATE_KEY, { lastPageProcessed: currentPage });
 
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
@@ -418,7 +452,6 @@ const crawler = new PlaywrightCrawler({
                     break;
                 }
 
-                // NAWIGACJA DO NASTĘPNEJ STRONY
                 const navigationSuccess = await navigateToPageNumber(page, currentPage + 1);
                 if (navigationSuccess) {
                     currentPage++;
@@ -448,9 +481,6 @@ console.log('📊 Statistics:', {
     saved: stats.dbSaved,
     duration: `${Math.round(stats.duration / 1000)}s`,
 });
-
-// Opcjonalnie: Wyczyść stan po udanym zakończeniu, by następne uruchomienie było od zera
-// await KeyValueStore.setValue(STATE_KEY, { lastPageProcessed: 0 });
 
 await closeDatabase();
 await Actor.exit();
