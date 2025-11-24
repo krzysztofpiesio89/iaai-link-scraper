@@ -1,10 +1,9 @@
 import { Actor } from 'apify';
-// DODANO: KeyValueStore do zapisu stanu
 import { PlaywrightCrawler, Dataset, KeyValueStore } from 'crawlee';
 import { prisma, testConnection, upsertCar, closeDatabase, getStats, showConnectionInfo } from './prisma.js';
 
 await Actor.init();
-console.log('🚀 IAAI Enhanced Data Scraper (V9 - Auto-Resume + Anti-Timeout) - Starting...');
+console.log('🚀 IAAI Enhanced Data Scraper (V11 - Deep Engine Parsing) - Starting...');
 
 const input = await Actor.getInput() ?? {};
 const {
@@ -20,11 +19,10 @@ const {
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
 const dataset = await Dataset.open();
 
-// --- LOGIKA PARSOWANIA (ZGODNA Z SYSTEMEM UPLOAD) ---
+// --- 1. PARSOWANIE PÓL OGÓLNYCH (Daty, liczby) ---
 const parseField = {
     toInt: (value) => {
         if (!value) return null;
-        // Konwersja na string w razie gdyby przyszła liczba
         const strVal = String(value);
         const parsed = parseInt(strVal.replace(/[^0-9]/g, ''), 10);
         return isNaN(parsed) ? null : parsed;
@@ -67,19 +65,57 @@ const parseField = {
             if (ampm.toLowerCase() === 'am' && hour === 12) hour = 0;
             
             const offset = tzOffsets[tz];
-            
-            // Fallback dla braku offsetu lub miesiąca
             if (!month || !offset) return null;
             
             const isoString = `${year}-${month}-${day.padStart(2, '0')}T${String(hour).padStart(2, '0')}:${finalMinute}:00${offset}`;
             const finalDate = new Date(isoString);
-            
             return isNaN(finalDate.getTime()) ? null : finalDate;
         } catch (error) { 
             console.warn('Error parsing date:', error.message);
             return null; 
         }
     }
+};
+
+// --- 2. ZAAWANSOWANE PARSOWANIE SILNIKA ---
+/**
+ * Rozbija string typu: "3.5L V-6 DI, DOHC, VVT, 278HP" na obiekt.
+ */
+const parseDeepEngineString = (engineInfoStr) => {
+    if (!engineInfoStr || typeof engineInfoStr !== 'string') return {};
+    
+    const result = {};
+
+    // 1. Wyciąganie POJEMNOŚCI (np. 3.5L, 2.0L)
+    // Szuka liczby (ewentualnie z kropką) tuż przed literą 'L'
+    const dispMatch = engineInfoStr.match(/(\d+(?:\.\d+)?)\s*L/i);
+    if (dispMatch) {
+        result.displacement = dispMatch[0].toUpperCase(); // Zapisuje "3.5L"
+    }
+
+    // 2. Wyciąganie KONI MECHANICZNYCH (np. 278HP)
+    // Szuka liczby przed 'HP'
+    const hpMatch = engineInfoStr.match(/(\d+)\s*HP/i);
+    if (hpMatch) {
+        result.horsepower = hpMatch[1]; // Zapisuje "278" (jako string, by pasowało do uploadera)
+    }
+
+    // 3. Wyciąganie CYLINDRÓW (np. V-6, V6, I4, 4Cyl)
+    // Szuka V-liczba, Vliczba, I-liczba lub liczba Cyl
+    const cylMatch = engineInfoStr.match(/\b(V-?\d+|I-?\d+|\d+\s*Cyl)\b/i);
+    if (cylMatch) {
+        // Normalizacja: usuwamy myślnik i dajemy uppercase (np. "V-6" -> "V6")
+        result.cylinders = cylMatch[0].replace('-', '').toUpperCase();
+    }
+
+    // 4. Wyciąganie PALIWA (jeśli jest w engineInfo, np. Flex Fuel, Diesel)
+    // Choć zazwyczaj jest w oddzielnym polu, czasem jest tutaj.
+    if (engineInfoStr.match(/Flex/i)) result.fuelType = 'Flex Fuel';
+    else if (engineInfoStr.match(/Diesel/i)) result.fuelType = 'Diesel';
+    else if (engineInfoStr.match(/Hybrid/i)) result.fuelType = 'Hybrid';
+    else if (engineInfoStr.match(/Electric/i)) result.fuelType = 'Electric';
+    
+    return result;
 };
 
 // --- KONFIGURACJA STANU (RESUME) ---
@@ -174,10 +210,8 @@ const extractVehicleDataFromList = async (page) => {
                 const damageParts = [primaryDamage, lossType].filter(Boolean);
                 const damageType = damageParts.length > 0 ? damageParts.join(' / ') : "";
                 
-                // Pobieramy jako tekst, parsowanie zrobimy w Node.js za pomocą parseField
                 const mileage = getTextByTitle("Odometer:");
-                
-                const engineInfo = getTextByTitle("Engine:");
+                const engineInfo = getTextByTitle("Engine:"); // Tutaj siedzi np. "3.5L V-6 DI..."
                 const fuelType = getTextByTitle("Fuel Type:");
                 const cylinders = getTextByTitle("Cylinder:");
                 const origin = getText('span[title^="Branch:"] a');
@@ -199,7 +233,6 @@ const extractVehicleDataFromList = async (page) => {
                     }
                 });
                 
-                // Pobieramy surowy ciąg daty (np. "Oct 24 10:00am CDT")
                 const auctionDate = getText('.data-list__value--action');
                 const is360 = !!row.querySelector('span.media_360_view');
                 const videoUrl = stock ? `https://mediastorageaccountprod.blob.core.windows.net/media/${stock}_VES-100_1` : null;
@@ -210,18 +243,18 @@ const extractVehicleDataFromList = async (page) => {
                     make,
                     model,
                     version,
-                    auctionDate, // Raw string
+                    auctionDate, 
                     is360,
                     damageType,
-                    mileage, // Raw string
+                    mileage,
                     engineStatus,
                     origin,
                     vin,
                     engineInfo,
                     fuelType,
                     cylinders,
-                    bidPrice, // Raw string
-                    buyNowPrice, // Raw string
+                    bidPrice,
+                    buyNowPrice,
                     videoUrl,
                     detailUrl,
                     imageUrl,
@@ -234,15 +267,13 @@ const extractVehicleDataFromList = async (page) => {
     });
 };
 
-// --- FUNKCJE POMOCNICZE (Stare parseDate usunięte na rzecz parseField) ---
+// --- FUNKCJE POMOCNICZE (Loader, Cookie, Paginacja) ---
 
 const waitForLoaderToDisappear = async (page, timeout = 25000) => {
     try {
         await page.waitForSelector('.circle-loader-shape', { state: 'hidden', timeout });
         await page.waitForSelector('.blockUI.blockOverlay', { state: 'hidden', timeout: 5000 }).catch(() => {});
-    } catch (e) {
-        // Ignorujemy warningi timeoutu loadera
-    }
+    } catch (e) { }
 };
 
 const handleCookieConsent = async (page) => {
@@ -274,7 +305,6 @@ const getTotalAuctionsCount = async (page) => {
     } catch (e) { return 'N/A'; }
 };
 
-// --- SZYBKIE PRZEWIJANIE (FAST FORWARD) ---
 const fastForwardToPage = async (page, targetPage) => {
     console.log(`⏩ FAST FORWARD MODE: Jumping to page ${targetPage}...`);
     let currentRangeMax = 10;
@@ -295,28 +325,23 @@ const fastForwardToPage = async (page, targetPage) => {
     await navigateToPageNumber(page, targetPage);
 };
 
-// --- NAWIGACJA ---
 const navigateToPageNumber = async (page, targetPageNumber) => {
     try {
         await waitForLoaderToDisappear(page);
-        
         const specificPageBtn = page.locator(`button#PageNumber${targetPageNumber}`);
         if (await specificPageBtn.isVisible({ timeout: 1000 }) && await specificPageBtn.isEnabled()) {
             await specificPageBtn.click();
             await waitForLoaderToDisappear(page);
             return true;
         }
-
         const nextTenBtn = page.locator('button.btn-next-10').first();
         const isNextTenVisible = await nextTenBtn.isVisible().catch(() => false);
         const isNextTenEnabled = await nextTenBtn.isEnabled().catch(() => false);
-
         if (!await specificPageBtn.isVisible() && isNextTenVisible && isNextTenEnabled) {
              console.log(`⏭️ Direct button missing. Clicking "Next 10 Pages" (btn-next-10)...`);
              await nextTenBtn.click();
              await page.waitForTimeout(2000);
              await waitForLoaderToDisappear(page);
-             
              const newSpecificBtn = page.locator(`button#PageNumber${targetPageNumber}`);
              if (await newSpecificBtn.isVisible()) {
                  const classAttr = await newSpecificBtn.getAttribute('class');
@@ -327,24 +352,21 @@ const navigateToPageNumber = async (page, targetPageNumber) => {
              }
              return true;
         }
-
         const nextButton = page.locator('button.btn-next').first();
         if (await nextButton.isVisible() && await nextButton.isEnabled()) {
             await nextButton.click();
             await waitForLoaderToDisappear(page);
             return true;
         }
-        
         console.log(`⚠️ Navigation failed to page ${targetPageNumber}.`);
         return false;
-
     } catch (error) {
         console.error(`❌ Navigation error:`, error.message);
         return false;
     }
 };
 
-// --- ZAPIS DO BAZY (ZAKTUALIZOWANY O PARSOWANIE) ---
+// --- ZAPIS DO BAZY (Z PEŁNYM PARSOWANIEM) ---
 const saveVehiclesToDatabase = async (vehiclesData) => {
     let savedCount = 0;
     let errorCount = 0;
@@ -352,7 +374,12 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
         try {
             if (!vehicle.stock) continue;
             
-            // TUTAJ ZASTOSOWANO NOWĄ LOGIKĘ PARSOWANIA
+            // 1. Parsujemy ciąg "engineInfo" na obiekt { displacement, horsepower, cylinders... }
+            const parsedEngineData = parseDeepEngineString(vehicle.engineInfo);
+
+            // 2. Składamy finalny obiekt. 
+            // UWAGA: Kolejność spread (...) ma znaczenie.
+            // Najpierw dane pobrane z tabeli, potem dane wyciągnięte z engineInfo.
             const carData = {
                 stock: vehicle.stock,
                 year: vehicle.year || 2020,
@@ -360,16 +387,11 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
                 model: vehicle.model || 'Unknown',
                 damageType: vehicle.damageType || '',
                 
-                // Konwersja mil na kilometry przy użyciu logiki uploadu
                 mileage: parseField.toKmFromMiles(vehicle.mileage),
-                
                 engineStatus: vehicle.engineStatus || 'Unknown',
                 
-                // Parsowanie cen
                 bidPrice: parseField.toFloat(vehicle.bidPrice) || 0,
                 buyNowPrice: parseField.toFloat(vehicle.buyNowPrice),
-                
-                // KRYTYCZNA POPRAWKA: Parsowanie daty zgodnie z systemem upload
                 auctionDate: parseField.toDate(vehicle.auctionDate),
                 
                 detailUrl: vehicle.detailUrl || '',
@@ -377,11 +399,23 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
                 version: vehicle.version || null,
                 origin: vehicle.origin || null,
                 vin: vehicle.vin || null,
+                
+                // Oryginalny string (np. "3.5L V-6 DI...")
                 engineInfo: vehicle.engineInfo || null,
-                fuelType: vehicle.fuelType || null,
-                cylinders: vehicle.cylinders || null,
+                
                 videoUrl: vehicle.videoUrl || null,
                 is360: vehicle.is360 || false,
+
+                // --- POLA ZALEŻNE OD PARSOWANIA ---
+                // Używamy sparsowanego 'cylinders' z engineInfo, chyba że tabela podała go jawnie
+                cylinders: parsedEngineData.cylinders || vehicle.cylinders || null,
+                
+                // Używamy sparsowanego 'fuelType', chyba że tabela podała go jawnie
+                fuelType: parsedEngineData.fuelType || vehicle.fuelType || null,
+                
+                // Dodajemy displacement (Pojemność) i horsepower (Moc)
+                displacement: parsedEngineData.displacement || null,
+                horsepower: parsedEngineData.horsepower || null,
             };
             
             await upsertCar(carData);
@@ -424,7 +458,6 @@ const crawler = new PlaywrightCrawler({
 
             while (true) {
                 await KeyValueStore.setValue(STATE_KEY, { lastPageProcessed: currentPage });
-
                 console.log(`\n📄 === Scraping page ${currentPage} ===`);
                 await page.waitForTimeout(1000);
 
