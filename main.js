@@ -19,6 +19,48 @@ const {
 const proxyConfigurationInstance = await Actor.createProxyConfiguration(proxyConfiguration);
 const dataset = await Dataset.open();
 
+// --- SŁOWNIK TŁUMACZEŃ KODÓW USZKODZEŃ ---
+const damageMapping = {
+    // Kody uszkodzeń (Primary Damage)
+    'All Over': 'Całość',
+    'Electrical': 'Elektryka',
+    'Engine Burn': 'Spalony Silnik',
+    'Engine Damage': 'Uszkodzenie Silnika',
+    'Exterior Burn': 'Spalony Zewnętrznie',
+    'Flood': 'Powódź',
+    'Front': 'Przód',
+    'Front & Rear': 'Przód i Tył',
+    'Front End': 'Przednia Część',
+    'Hail': 'Grad',
+    'Interior Burn': 'Spalony Wewnętrznie',
+    'Left Front': 'Lewy Przód',
+    'Left Rear': 'Lewy Tył',
+    'Left Side': 'Lewy Bok',
+    'Mechanical': 'Mechaniczne',
+    'Rear': 'Tył',
+    'Right Front': 'Prawy Przód',
+    'Right Rear': 'Prawy Tył',
+    'Right Side': 'Prawy Bok',
+    'Roll Over': 'Dachowanie',
+    'Rollover': 'Dachowanie',
+    'Suspension': 'Zawieszenie',
+    'Theft': 'Kradzież',
+    'Total Burn': 'Całkowicie Spalony',
+    'Vandalized': 'Wandalizm',
+    'Undercarriage': 'Podwozie',
+    'Unknown': 'Nieznane',
+    'Strip': 'Ogołocony',
+    'None': 'Brak',
+    
+    // Kody typu straty (Loss Type)
+    'Collision': 'Kolizja',
+    'Wreck': 'Wrak / Zniszczenie',
+    'Water': 'Wodne',
+    'Fire': 'Pożar',
+    'Salvage': 'Wrak / Do kasacji', // często używane dla typu straty
+    'Biohazard': 'Zagrożenie Biologiczne', 
+};
+
 // --- 1. PARSOWANIE PÓL OGÓLNYCH ---
 const parseField = {
     toInt: (value) => {
@@ -385,13 +427,26 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
             // 1. Parsujemy dane silnika
             const parsedEngineData = parseDeepEngineString(vehicle.engineInfo);
 
-            // 2. Mapujemy na pola bazy zgodnie ze schematem Prisma
+            // 2. Tłumaczymy kody uszkodzeń
+            let translatedDamage = '';
+            if (vehicle.damageType) {
+                // Rozdzielamy ciąg znaków separatorem " / "
+                const damageParts = vehicle.damageType.split(' / ');
+                // Tłumaczymy każdą część i łączymy z powrotem
+                const translatedParts = damageParts.map(part => {
+                    const trimmedPart = part.trim();
+                    return damageMapping[trimmedPart] || trimmedPart; // Używamy oryginalnej wartości jeśli nie ma tłumaczenia
+                });
+                translatedDamage = translatedParts.join(' / ');
+            }
+
+            // 3. Mapujemy na pola bazy zgodnie ze schematem Prisma
             const carData = {
                 stock: vehicle.stock,
                 year: vehicle.year || 2020,
                 make: vehicle.make || 'Unknown',
                 model: vehicle.model || 'Unknown',
-                damageType: vehicle.damageType || '',
+                damageType: translatedDamage, // Używamy przetłumaczonej wartości
                 
                 mileage: parseField.toKmFromMiles(vehicle.mileage),
                 engineStatus: vehicle.engineStatus || 'Unknown',
