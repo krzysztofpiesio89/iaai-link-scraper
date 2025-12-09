@@ -61,6 +61,14 @@ const damageMapping = {
     'Biohazard': 'Zagrożenie Biologiczne', 
 };
 
+// --- SŁOWNIK TŁUMACZEŃ STATUSU SILNIKA ---
+const engineStatusMapping = {
+    'Run & Drive': 'Odpala i jeździ',
+    'Starts': 'Silnik odpala',
+    'Stationary': 'Unieruchomiony',
+    'Unknown': 'Nieznany'
+};
+
 // --- 1. PARSOWANIE PÓL OGÓLNYCH ---
 const parseField = {
     toInt: (value) => {
@@ -440,7 +448,10 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
                 translatedDamage = translatedParts.join(' / ');
             }
 
-            // 3. Mapujemy na pola bazy zgodnie ze schematem Prisma
+            // 3. Tłumaczymy status silnika
+            const translatedEngineStatus = engineStatusMapping[vehicle.engineStatus] || vehicle.engineStatus || 'Unknown';
+
+            // 4. Mapujemy na pola bazy zgodnie ze schematem Prisma
             const carData = {
                 stock: vehicle.stock,
                 year: vehicle.year || 2020,
@@ -449,7 +460,7 @@ const saveVehiclesToDatabase = async (vehiclesData) => {
                 damageType: translatedDamage, // Używamy przetłumaczonej wartości
                 
                 mileage: parseField.toKmFromMiles(vehicle.mileage),
-                engineStatus: vehicle.engineStatus || 'Unknown',
+                engineStatus: translatedEngineStatus, // Używamy przetłumaczonego statusu
                 
                 bidPrice: parseField.toFloat(vehicle.bidPrice) || 0,
                 buyNowPrice: parseField.toFloat(vehicle.buyNowPrice),
